@@ -119,4 +119,4 @@ class TestRiskManager:
             peak_equity=500.0, locked_capital=0.0, daily_pnl=0.0, total_fees_today=0.0, drawdown_pct=0.0)
         order2 = rm.validate(low_conf, big_portfolio, min_confidence=0.3)
         assert order2 is not None
-        assert order2.leverage == 2
+        assert order2.leverage == 3

@@ -70,7 +70,7 @@ class RiskManager:
         elif signal.confidence >= 0.5:
             leverage = self.config.leverage_medium_confidence
         else:
-            leverage = max(1, self.config.leverage_medium_confidence // 2)
+            leverage = max(3, self.config.leverage_medium_confidence // 2)
 
         # Calculate available capital per position
         # Reserve capital equally among max positions
