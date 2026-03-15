@@ -75,18 +75,25 @@ class LiveExecutor:
                     position_side = "LONG" if signal.direction == Direction.LONG else "SHORT"
                     order_type = tranche.get("type", "MARKET").lower()
 
+                    # Round quantity to exchange precision
+                    qty = float(self.exchange.amount_to_precision(
+                        ccxt_symbol, tranche["quantity"]))
+                    if qty <= 0:
+                        logger.warning(f"Quantity too small after rounding: {tranche['quantity']} -> {qty}")
+                        break
+
                     params: Dict = {"positionSide": position_side}
                     if order_type == "limit":
                         order = await self.exchange.create_limit_order(
                             ccxt_symbol,
                             side,
-                            tranche["quantity"],
+                            qty,
                             tranche["price"],
                             params,
                         )
                     else:
                         order = await self.exchange.create_market_order(
-                            ccxt_symbol, side, tranche["quantity"], params
+                            ccxt_symbol, side, qty, params
                         )
 
                     fill_price = order.get(
