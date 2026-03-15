@@ -41,16 +41,24 @@ class Notifier:
             logger.debug(f"macOS notification failed: {e}")
 
     def _send_telegram(self, title: str, message: str) -> bool:
-        """Send Telegram message (sync, for simplicity)."""
+        """Send Telegram message with Markdown fallback to plain text."""
         try:
             import requests
             url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
             text = f"*{title}*\n{message}"
+            # Try Markdown first
             resp = requests.post(url, json={
                 "chat_id": self.telegram_chat_id,
                 "text": text,
                 "parse_mode": "Markdown",
             }, timeout=10)
+            if resp.status_code != 200:
+                # Markdown failed ($ or special chars), send plain text
+                text_plain = f"{title}\n{message}"
+                resp = requests.post(url, json={
+                    "chat_id": self.telegram_chat_id,
+                    "text": text_plain,
+                }, timeout=10)
             return resp.status_code == 200
         except Exception as e:
             logger.error(f"Telegram send failed: {e}")
