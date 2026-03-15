@@ -26,10 +26,17 @@ class WhaleTracker:
             })
             # Keep only last 15 min
             cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
-            self._large_trades = [
-                t for t in self._large_trades
-                if (t["timestamp"].replace(tzinfo=timezone.utc) if t["timestamp"].tzinfo is None else t["timestamp"]) > cutoff
-            ]
+            kept = []
+            for t in self._large_trades:
+                try:
+                    ts = t["timestamp"]
+                    if hasattr(ts, 'tzinfo') and ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    if ts > cutoff:
+                        kept.append(t)
+                except (TypeError, AttributeError):
+                    pass
+            self._large_trades = kept
 
     def get_signal(self, symbol: str = "BTCUSDT") -> DirectionalBias:
         """Analyze recent whale activity."""

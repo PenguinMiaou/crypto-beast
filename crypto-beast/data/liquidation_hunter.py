@@ -16,13 +16,27 @@ class LiquidationHunter:
 
     def process_liquidation(self, event: dict) -> None:
         """Process a forceOrder event."""
+        # Normalize timestamp to aware
+        ts = event.get("timestamp")
+        if ts is None:
+            ts = datetime.now(timezone.utc)
+        elif hasattr(ts, 'tzinfo') and ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        event["timestamp"] = ts
         self._events.append(event)
         # Prune old events (keep last 30 min)
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
-        self._events = [
-            e for e in self._events
-            if self._ensure_aware(e.get("timestamp", datetime.now(timezone.utc))) > cutoff
-        ]
+        kept = []
+        for e in self._events:
+            try:
+                ets = e.get("timestamp", cutoff)
+                if hasattr(ets, 'tzinfo') and ets.tzinfo is None:
+                    ets = ets.replace(tzinfo=timezone.utc)
+                if ets > cutoff:
+                    kept.append(e)
+            except (TypeError, AttributeError):
+                pass
+        self._events = kept
 
     @staticmethod
     def _ensure_aware(dt: datetime) -> datetime:
