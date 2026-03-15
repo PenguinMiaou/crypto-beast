@@ -208,6 +208,18 @@ class TradingBot:
                 telegram_token=env.get("TELEGRAM_BOT_TOKEN", ""),
                 telegram_chat_id=env.get("TELEGRAM_CHAT_ID", ""),
             )
+            from monitoring.telegram_bot import TelegramBot
+            telegram_bot = TelegramBot(
+                token=env.get("TELEGRAM_BOT_TOKEN", ""),
+                chat_id=env.get("TELEGRAM_CHAT_ID", ""),
+                db=self.db,
+                exchange=self.exchange,
+                bot_state={
+                    "mode": "LIVE" if not self.paper_mode else "PAPER",
+                    "starting_capital": wallet,
+                    "start_time": datetime.now(timezone.utc),
+                },
+            )
             monitor = MonitorData(self.db)
             system_guard = SystemGuard(latency_warn=1000, latency_halt=5000)
             # Don't use initial latency (includes SSL handshake)
@@ -240,6 +252,7 @@ class TradingBot:
                 "evolver": evolver,
                 "trade_reviewer": trade_reviewer,
                 "notifier": notifier,
+                "telegram_bot": telegram_bot,
                 "monitor": monitor,
                 "system_guard": system_guard,
                 "exchange_sync": exchange_sync,
@@ -419,8 +432,16 @@ class TradingBot:
                 m["multi_timeframe"].update(symbol, klines_by_tf)
 
         # 10. Generate and execute signals
+        # Check if trading is paused via Telegram
+        _trading_paused = m.get("telegram_bot") and m["telegram_bot"].is_paused
+        if _trading_paused:
+            logger.debug("Trading paused via Telegram, skipping signal generation")
+
         opened_this_cycle = set()
         for symbol in data_feed.symbols:
+            if _trading_paused:
+                break
+
             klines_5m = data_feed.get_klines(symbol, "5m")
             if len(klines_5m) < 50:
                 continue
@@ -760,6 +781,9 @@ async def main(args):
     # Start scheduler in background
     scheduler_task = asyncio.create_task(bot.run_scheduler(shutdown))
 
+    # Start Telegram bot polling
+    telegram_task = asyncio.create_task(bot.modules["telegram_bot"].start_polling())
+
     interval = bot.config.main_loop_interval
     logger.info(f"Main loop started (every {interval}s). Press Ctrl+C to stop.")
 
@@ -778,6 +802,11 @@ async def main(args):
         scheduler_task.cancel()
         try:
             await scheduler_task
+        except asyncio.CancelledError:
+            pass
+        telegram_task.cancel()
+        try:
+            await telegram_task
         except asyncio.CancelledError:
             pass
         await bot.shutdown_sequence()
