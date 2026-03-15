@@ -52,6 +52,10 @@ class TestConfig:
         env_file = tmp_path / ".env"
         env_file.write_text("BINANCE_API_KEY=test_key\nBINANCE_API_SECRET=test_secret\nTRADING_MODE=paper\n")
         monkeypatch.chdir(tmp_path)
+        # Clear real env vars so test .env takes effect
+        monkeypatch.delenv("BINANCE_API_KEY", raising=False)
+        monkeypatch.delenv("BINANCE_API_SECRET", raising=False)
+        monkeypatch.delenv("TRADING_MODE", raising=False)
 
         cfg = Config(env_path=str(env_file))
         assert cfg.binance_api_key == "test_key"

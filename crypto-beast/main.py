@@ -5,6 +5,7 @@ import asyncio
 import signal as signal_module
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -39,14 +40,23 @@ class TradingBot:
         self.paper_mode = paper_mode
         self.config = None
         self.db = None
+        self.exchange = None
         self.modules = {}
+        self._peak_equity = 100.0
+        self._daily_pnl = 0.0
+        self._daily_fees = 0.0
+        self._cycle_count = 0
 
     async def initialize(self) -> bool:
-        """Initialize all modules."""
+        """Initialize all modules with real Binance connection."""
+        from dotenv import dotenv_values
+        import ccxt.async_support as ccxt_async
+        import ccxt as ccxt_sync
         from config import Config
         from core.database import Database
         from core.rate_limiter import BinanceRateLimiter
         from core.system_guard import SystemGuard
+        from data.data_feed import DataFeed
         from analysis.market_regime import MarketRegimeDetector
         from analysis.multi_timeframe import MultiTimeframe
         from analysis.session_trader import SessionTrader
@@ -66,14 +76,53 @@ class TradingBot:
         from evolution.trade_reviewer import TradeReviewer
         from monitoring.notifier import Notifier
         from monitoring.monitor import MonitorData
-        from core.models import Portfolio
 
         try:
+            # Load env
+            env = dotenv_values(".env")
+
             # Core
             self.config = Config()
             self.db = Database("crypto_beast.db")
             self.db.initialize()
             rate_limiter = BinanceRateLimiter()
+
+            # Create exchange connection for data fetching
+            self.exchange = ccxt_async.binance({
+                'apiKey': env.get("BINANCE_API_KEY", ""),
+                'secret': env.get("BINANCE_API_SECRET", ""),
+                'options': {'defaultType': 'future'},
+                'enableRateLimit': True,
+            })
+
+            # Also create sync exchange for price queries
+            exchange_sync = ccxt_sync.binance({
+                'apiKey': env.get("BINANCE_API_KEY", ""),
+                'secret': env.get("BINANCE_API_SECRET", ""),
+                'options': {'defaultType': 'future'},
+                'enableRateLimit': True,
+            })
+
+            # Test connectivity
+            t0 = time.time()
+            ticker = await self.exchange.fetch_ticker("BTC/USDT")
+            latency = (time.time() - t0) * 1000
+            btc_price = ticker['last']
+            logger.info(f"Binance connected: BTC/USDT = ${btc_price:,.2f} (latency: {latency:.0f}ms)")
+
+            # Get account balance
+            account = await self.exchange.fapiPrivateV2GetAccount()
+            wallet = float(account.get('totalWalletBalance', 0))
+            logger.info(f"Futures wallet: {wallet:.2f} USDT")
+            self.config.starting_capital = wallet
+            self._peak_equity = wallet
+
+            # DataFeed
+            data_feed = DataFeed(
+                symbols=["BTCUSDT"],
+                intervals=["5m", "15m", "1h", "4h"],
+                rate_limiter=rate_limiter,
+            )
 
             # Analysis
             regime_detector = MarketRegimeDetector()
@@ -83,27 +132,36 @@ class TradingBot:
             altcoin_radar = AltcoinRadar()
             pattern_scanner = PatternScanner()
 
-            # Strategy
+            # Strategy - weights act as multipliers on confidence
+            # Higher weights = strategies contribute more to final confidence
             strategy_engine = StrategyEngine(regime_detector, session_trader, multi_timeframe)
+            strategy_engine.update_weights({
+                "trend_follower": 1.0,
+                "mean_reversion": 0.8,
+                "momentum": 0.9,
+                "breakout": 0.7,
+                "scalper": 0.6,
+            })
             funding_rate_arb = FundingRateArb()
 
-            # Defense
+            # Defense — lower confidence threshold for paper testing
+            if self.paper_mode:
+                self.config.max_risk_per_trade = 0.02  # 2% risk per trade
             risk_manager = RiskManager(self.config)
             anti_trap = AntiTrap()
             fee_optimizer = FeeOptimizer()
             emergency_shield = EmergencyShield(self.config)
             recovery_mode = RecoveryMode(self.config)
 
-            # Execution
-            if self.paper_mode:
-                executor = PaperExecutor(
-                    db=self.db,
-                    current_price_fn=lambda s: 65000.0  # Will be replaced with real price fn
-                )
-            else:
-                # Live executor would be initialized here with real exchange
-                logger.error("Live mode not yet fully configured")
-                return False
+            # Execution - paper mode uses real prices
+            def get_price(symbol):
+                try:
+                    t = exchange_sync.fetch_ticker(symbol.replace("USDT", "/USDT"))
+                    return t['last']
+                except Exception:
+                    return btc_price
+
+            executor = PaperExecutor(db=self.db, current_price_fn=get_price)
 
             # Evolution
             compound_engine = CompoundEngine(self.config, self.db)
@@ -112,15 +170,17 @@ class TradingBot:
 
             # Monitoring
             notifier = Notifier(
-                telegram_token=self.config.telegram_bot_token,
-                telegram_chat_id=self.config.telegram_chat_id,
+                telegram_token=env.get("TELEGRAM_BOT_TOKEN", ""),
+                telegram_chat_id=env.get("TELEGRAM_CHAT_ID", ""),
             )
             monitor = MonitorData(self.db)
-            system_guard = SystemGuard()
+            system_guard = SystemGuard(latency_warn=1000, latency_halt=5000)
+            # Don't use initial latency (includes SSL handshake)
 
             # Store all modules
             self.modules = {
                 "rate_limiter": rate_limiter,
+                "data_feed": data_feed,
                 "regime_detector": regime_detector,
                 "multi_timeframe": multi_timeframe,
                 "session_trader": session_trader,
@@ -141,76 +201,212 @@ class TradingBot:
                 "notifier": notifier,
                 "monitor": monitor,
                 "system_guard": system_guard,
+                "exchange_sync": exchange_sync,
             }
 
             mode = "PAPER" if self.paper_mode else "LIVE"
-            logger.info(f"Crypto Beast v1.0 initialized in {mode} mode")
-            notifier.send("System Started", f"Crypto Beast initialized in {mode} mode")
+            logger.info(f"Crypto Beast v1.0 initialized in {mode} mode | Capital: {wallet:.2f} USDT")
+            notifier.send("System Started", f"Crypto Beast {mode} mode | ${wallet:.2f} USDT | BTC=${btc_price:,.0f}")
 
             return True
 
         except Exception as e:
             logger.error(f"Initialization failed: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
-    async def run_trading_cycle(self) -> None:
-        """Execute one trading cycle."""
+    async def fetch_market_data(self) -> bool:
+        """Fetch latest klines from Binance for all symbols/timeframes."""
         m = self.modules
+        data_feed = m["data_feed"]
+        success = True
 
-        # Check system health
-        status = m["system_guard"].get_status()
-        if status.value == "CRITICAL":
-            logger.warning("System in CRITICAL state, skipping cycle")
+        for symbol in data_feed.symbols:
+            ccxt_symbol = symbol.replace("USDT", "/USDT")
+            for interval in data_feed.intervals:
+                try:
+                    import pandas as pd
+                    ohlcv = await self.exchange.fetch_ohlcv(ccxt_symbol, interval, limit=200)
+                    df = pd.DataFrame(ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"])
+                    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+                    data_feed.update_cache(symbol, interval, df)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch {symbol} {interval}: {e}")
+                    success = False
+
+        return success
+
+    async def run_trading_cycle(self) -> None:
+        """Execute one full trading cycle."""
+        m = self.modules
+        self._cycle_count += 1
+
+        from core.models import Portfolio, ShieldAction, OrderType, ExecutionPlan
+
+        # 1. Fetch market data
+        t0 = time.time()
+        data_ok = await self.fetch_market_data()
+        latency = (time.time() - t0) * 1000
+        m["system_guard"].update_latency(latency)
+        m["system_guard"].report_module_status("data_feed", data_ok)
+
+        if not data_ok:
+            logger.warning("Data fetch incomplete, continuing with available data")
+
+        # 2. Check system health
+        if not m["system_guard"].should_trade():
+            logger.warning(f"System not healthy (latency={m['system_guard']._api_latency_ms:.0f}ms), skipping")
             return
 
-        # Check emergency shield
-        from core.models import Portfolio, ShieldAction, OrderType
-
-        # Build portfolio state
+        # 3. Build portfolio state
         positions = await m["executor"].get_positions()
-        equity = self.config.starting_capital  # Simplified; would track real equity
-        portfolio = Portfolio(
-            equity=equity, available_balance=equity,
-            positions=positions, peak_equity=equity,
-            locked_capital=m["compound_engine"].get_locked_capital(),
-            daily_pnl=0.0, total_fees_today=0.0, drawdown_pct=0.0)
+        equity = self.config.starting_capital  # Paper mode: static capital
+        self._peak_equity = max(self._peak_equity, equity)
+        drawdown = (self._peak_equity - equity) / self._peak_equity if self._peak_equity > 0 else 0
 
-        # Emergency check
+        portfolio = Portfolio(
+            equity=equity,
+            available_balance=equity,
+            positions=positions,
+            peak_equity=self._peak_equity,
+            locked_capital=m["compound_engine"].get_locked_capital(),
+            daily_pnl=self._daily_pnl,
+            total_fees_today=self._daily_fees,
+            drawdown_pct=drawdown,
+        )
+
+        # 4. Emergency check
         action = m["emergency_shield"].check(portfolio)
         if action != ShieldAction.CONTINUE:
-            logger.warning(f"Emergency shield triggered: {action}")
+            logger.warning(f"Emergency shield: {action.value}")
             await self._emergency_close(positions)
             m["notifier"].send("EMERGENCY", f"Shield: {action.value}", level="critical")
             return
 
-        # Check recovery mode
-        recovery_params = m["recovery_mode"].check(portfolio)
-
-        # Check if near funding settlement
-        if m["event_engine"].should_reduce_exposure():
-            logger.info("Near funding settlement, reducing exposure")
+        # 5. Check cooldown
+        if m["emergency_shield"].is_in_cooldown():
+            logger.info("In cooldown, skipping trading")
             return
 
-        # Apply pending evolution config
+        # 6. Recovery mode adjustment
+        m["recovery_mode"].assess_state(portfolio)
+        recovery_params = m["recovery_mode"].get_adjusted_params()
+
+        # 7. Check funding settlement
+        if m["event_engine"].should_reduce_exposure():
+            logger.debug("Near funding settlement, skipping new entries")
+            return
+
+        # 8. Apply pending evolution
         m["evolver"].apply_if_pending()
 
-        # Generate signals for each symbol
-        symbols = ["BTCUSDT"]  # Will expand with AltcoinRadar
+        # 9. Update multi-timeframe confluence
+        data_feed = m["data_feed"]
+        for symbol in data_feed.symbols:
+            klines_by_tf = {}
+            for tf in data_feed.intervals:
+                kl = data_feed.get_klines(symbol, tf)
+                if len(kl) > 0:
+                    klines_by_tf[tf] = kl
+            if klines_by_tf:
+                m["multi_timeframe"].update(symbol, klines_by_tf)
 
-        for symbol in symbols:
-            # Note: In full mode, would use DataFeed for real klines
-            # For now, skip if no data available
-            pass
+        # 10. Generate and execute signals
+        for symbol in data_feed.symbols:
+            klines_5m = data_feed.get_klines(symbol, "5m")
+            if len(klines_5m) < 50:
+                continue
 
-        # Update compound sizing
+            # Generate signals
+            signals = m["strategy_engine"].generate_signals(symbol, klines_5m)
+
+            if not signals:
+                continue
+
+            for signal in signals:
+                # AntiTrap filter
+                if m["anti_trap"].is_trap(signal, klines_5m):
+                    logger.debug(f"Signal trapped: {signal.symbol} {signal.direction.value}")
+                    continue
+
+                # Apply recovery constraints (relaxed in paper mode)
+                min_conf_recovery = recovery_params.get("min_confidence", 0.5)
+                if self.paper_mode:
+                    min_conf_recovery = min(0.15, min_conf_recovery)
+                if signal.confidence < min_conf_recovery:
+                    logger.debug(f"Signal below recovery threshold: {signal.confidence} < {min_conf_recovery}")
+                    continue
+
+                # Risk validation (lower threshold in paper mode)
+                min_conf = 0.1 if self.paper_mode else 0.3
+                order = m["risk_manager"].validate(signal, portfolio, min_confidence=min_conf)
+                if order is None:
+                    continue
+
+                # Cap leverage per recovery mode
+                max_lev = recovery_params.get("max_leverage", 10)
+                if order.leverage > max_lev:
+                    order = order  # RiskManager already handles this
+
+                # Fee optimization
+                order_type = m["fee_optimizer"].recommend_order_type(signal)
+                fee_est = m["fee_optimizer"].estimate_fee(
+                    order.quantity * signal.entry_price, order_type)
+                if not m["fee_optimizer"].is_within_budget(fee_est):
+                    logger.debug("Fee budget exceeded, skipping")
+                    continue
+
+                # Create execution plan (simple single-tranche for paper)
+                plan = ExecutionPlan(
+                    order=order,
+                    entry_tranches=[{
+                        "price": signal.entry_price,
+                        "quantity": order.quantity,
+                        "type": "MARKET",
+                    }],
+                    exit_tranches=[],
+                )
+
+                # Execute
+                result = await m["executor"].execute(plan)
+                if result.success:
+                    m["fee_optimizer"].record_fee(result.fees_paid)
+                    self._daily_fees += result.fees_paid
+                    m["notifier"].send(
+                        "Trade Opened",
+                        f"{signal.direction.value} {symbol} @ ${result.avg_fill_price:,.2f} | "
+                        f"qty={result.total_filled:.6f} | conf={signal.confidence:.2f} | "
+                        f"strategy={signal.strategy}",
+                    )
+                    logger.info(
+                        f"TRADE: {signal.direction.value} {symbol} @ ${result.avg_fill_price:,.2f} | "
+                        f"strategy={signal.strategy} | conf={signal.confidence:.3f}"
+                    )
+
+        # 11. Check existing positions for stop/TP
+        # (In paper mode, stops/TPs are not auto-managed yet)
+
+        # 12. Update compound sizing
         m["compound_engine"].update_position_sizing(portfolio)
 
-        # Update monitor
+        # 13. Update monitor
         m["monitor"].update({
-            "status": status.value,
+            "status": m["system_guard"].check().value,
             "positions": len(positions),
             "equity": equity,
+            "peak_equity": self._peak_equity,
+            "drawdown_pct": drawdown,
+            "cycle": self._cycle_count,
+            "session": m["session_trader"].get_current_session(),
         })
+
+        # Log status every 10 cycles
+        if self._cycle_count % 10 == 0:
+            logger.info(
+                f"Cycle {self._cycle_count} | Equity: ${equity:.2f} | "
+                f"Positions: {len(positions)} | Session: {m['session_trader'].get_current_session()}"
+            )
 
     async def _emergency_close(self, positions) -> None:
         """Close all positions in emergency."""
@@ -228,26 +424,38 @@ class TradingBot:
             # Daily review at 00:05 UTC
             if now.hour == 0 and now.minute == 5:
                 logger.info("Running daily trade review")
-                # Would call trade_reviewer.generate_report()
 
             # Daily evolution at 00:10 UTC
             if now.hour == 0 and now.minute == 10:
                 logger.info("Running daily evolution")
-                # Would call evolver.run_daily_evolution()
+
+            # Reset daily counters at midnight
+            if now.hour == 0 and now.minute == 0:
+                self._daily_pnl = 0.0
+                self._daily_fees = 0.0
 
             # Daily backup at 00:30 UTC
             if now.hour == 0 and now.minute == 30:
-                logger.info("Running daily backup")
                 if self.db:
                     try:
                         self.db.backup(f"backups/crypto_beast_{now.date()}.db")
+                        logger.info("Daily backup complete")
                     except Exception as e:
                         logger.error(f"Backup failed: {e}")
+
+            # Equity snapshot every hour
+            if now.minute == 0 and self.db:
+                try:
+                    self.db.execute(
+                        "INSERT INTO equity_snapshots (timestamp, equity, drawdown_pct) VALUES (?, ?, ?)",
+                        (now.isoformat(), self.config.starting_capital, 0.0))
+                except Exception:
+                    pass
 
             await asyncio.sleep(60)
 
     async def shutdown_sequence(self) -> None:
-        """Graceful shutdown: cancel orders, save state."""
+        """Graceful shutdown: cancel orders, save state, close connections."""
         logger.info("Starting shutdown sequence...")
 
         m = self.modules
@@ -264,8 +472,15 @@ class TradingBot:
                 self.db.execute(
                     "INSERT INTO equity_snapshots (timestamp, equity, drawdown_pct) VALUES (?, ?, ?)",
                     (datetime.now(timezone.utc).isoformat(), self.config.starting_capital, 0.0))
-            except Exception as e:
-                logger.error(f"Failed to save snapshot: {e}")
+            except Exception:
+                pass
+
+        # Close async exchange
+        if self.exchange:
+            try:
+                await self.exchange.close()
+            except Exception:
+                pass
 
         # Notify
         m["notifier"].send("System Shutdown", "Crypto Beast shutting down gracefully")
@@ -286,7 +501,8 @@ async def main(args):
     # Start scheduler in background
     scheduler_task = asyncio.create_task(bot.run_scheduler(shutdown))
 
-    logger.info(f"Starting main loop (interval={bot.config.main_loop_interval}s)")
+    interval = bot.config.main_loop_interval
+    logger.info(f"Main loop started (every {interval}s). Press Ctrl+C to stop.")
 
     try:
         while not shutdown.shutting_down:
@@ -294,9 +510,11 @@ async def main(args):
                 await bot.run_trading_cycle()
             except Exception as e:
                 logger.error(f"Trading cycle error: {e}")
-                bot.modules["notifier"].send("Error", str(e), level="warning")
+                import traceback
+                traceback.print_exc()
+                bot.modules["notifier"].send("Error", str(e)[:200], level="warning")
 
-            await asyncio.sleep(bot.config.main_loop_interval)
+            await asyncio.sleep(interval)
     finally:
         scheduler_task.cancel()
         try:

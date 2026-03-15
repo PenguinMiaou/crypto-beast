@@ -18,9 +18,9 @@ class RiskManager:
     def __init__(self, config: Config):
         self.config = config
 
-    def validate(self, signal: TradeSignal, portfolio: Portfolio) -> Optional[ValidatedOrder]:
+    def validate(self, signal: TradeSignal, portfolio: Portfolio, min_confidence: float = 0.3) -> Optional[ValidatedOrder]:
         # Reject low confidence signals
-        if signal.confidence < 0.5:
+        if signal.confidence < min_confidence:
             logger.debug(f"Signal rejected: confidence {signal.confidence} < 0.5")
             return None
 
@@ -41,7 +41,7 @@ class RiskManager:
         elif signal.confidence >= 0.5:
             leverage = self.config.leverage_medium_confidence
         else:
-            return None
+            leverage = max(1, self.config.leverage_medium_confidence // 2)
 
         # Calculate position size based on risk
         risk_per_trade = portfolio.equity * self.config.max_risk_per_trade

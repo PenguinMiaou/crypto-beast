@@ -111,5 +111,10 @@ class TestRiskManager:
             entry_price=65000.0, stop_loss=64000.0, take_profit=67000.0,
             strategy="test", regime=MarketRegime.TRENDING_UP, timeframe_score=8,
         )
-        order = rm.validate(low_conf, empty_portfolio)
+        # Below min_confidence (default 0.3) → rejected
+        order = rm.validate(low_conf, empty_portfolio, min_confidence=0.5)
         assert order is None
+        # At min_confidence → accepted with reduced leverage
+        order2 = rm.validate(low_conf, empty_portfolio, min_confidence=0.3)
+        assert order2 is not None
+        assert order2.leverage == 2
