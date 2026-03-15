@@ -3,7 +3,7 @@
 set -e
 
 SRC="/Volumes/ORICO Media/Crypto Trading System/crypto-beast"
-DST="$HOME/briantiong/crypto-beast-runtime"
+DST="/var/tmp/crypto-beast"
 PIDFILE="$DST/bot.pid"
 
 echo "=== Crypto Beast v1.0 ==="
