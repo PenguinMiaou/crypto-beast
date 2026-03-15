@@ -1,6 +1,6 @@
 """Tests for WhaleTracker."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -16,7 +16,7 @@ def tracker():
 class TestWhaleTracker:
     def test_large_buy_trades_bullish(self, tracker):
         """Large buy trades should produce BULLISH signal."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for _ in range(5):
             tracker.process_trade({
                 "price": 50000.0,
@@ -31,7 +31,7 @@ class TestWhaleTracker:
 
     def test_large_sell_trades_bearish(self, tracker):
         """Large sell trades should produce BEARISH signal."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for _ in range(5):
             tracker.process_trade({
                 "price": 50000.0,
@@ -52,7 +52,7 @@ class TestWhaleTracker:
 
     def test_old_trades_pruned(self, tracker):
         """Trades older than 15 minutes should be pruned."""
-        old_time = datetime.utcnow() - timedelta(minutes=20)
+        old_time = datetime.now(timezone.utc) - timedelta(minutes=20)
         tracker.process_trade({
             "price": 50000.0,
             "quantity": 3.0,
@@ -64,7 +64,7 @@ class TestWhaleTracker:
             "price": 50000.0,
             "quantity": 3.0,
             "is_buyer_maker": False,
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
         })
         # Only one trade should remain (the recent one)
         assert len(tracker._large_trades) == 1
@@ -75,7 +75,7 @@ class TestWhaleTracker:
             "price": 50000.0,
             "quantity": 1.0,  # $50k - below threshold
             "is_buyer_maker": False,
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
         })
         assert len(tracker._large_trades) == 0
         signal = tracker.get_signal("BTCUSDT")
@@ -83,7 +83,7 @@ class TestWhaleTracker:
 
     def test_balanced_trades_neutral(self, tracker):
         """Equal buys and sells should give NEUTRAL."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for _ in range(3):
             tracker.process_trade({
                 "price": 50000.0, "quantity": 3.0,

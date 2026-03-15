@@ -1,6 +1,6 @@
 """Tests for LiquidationHunter."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -16,7 +16,7 @@ def hunter():
 class TestLiquidationHunter:
     def test_cascade_detection(self, hunter):
         """High volume events should trigger cascade detection."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         # Set a low average so current volume exceeds 2x
         hunter.update_average(1000.0)
 
@@ -33,7 +33,7 @@ class TestLiquidationHunter:
 
     def test_bullish_after_long_cascade(self, hunter):
         """Long liquidation cascade should produce BULLISH signal (reversal)."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         hunter.update_average(1000.0)
 
         for _ in range(5):
@@ -51,7 +51,7 @@ class TestLiquidationHunter:
 
     def test_bearish_after_short_cascade(self, hunter):
         """Short liquidation cascade should produce BEARISH signal."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         hunter.update_average(1000.0)
 
         for _ in range(5):
@@ -75,7 +75,7 @@ class TestLiquidationHunter:
 
     def test_normal_activity_neutral(self, hunter):
         """Non-cascade activity should give NEUTRAL."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         # Set high average so current volume doesn't exceed 2x
         hunter.update_average(10_000_000.0)
 
@@ -92,7 +92,7 @@ class TestLiquidationHunter:
 
     def test_old_events_pruned(self, hunter):
         """Events older than 30 minutes should be pruned."""
-        old_time = datetime.utcnow() - timedelta(minutes=35)
+        old_time = datetime.now(timezone.utc) - timedelta(minutes=35)
         hunter.process_liquidation({
             "side": "LONG",
             "quantity": 10.0,
@@ -104,7 +104,7 @@ class TestLiquidationHunter:
             "side": "LONG",
             "quantity": 1.0,
             "price": 50000.0,
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
         })
         assert len(hunter._events) == 1
 
