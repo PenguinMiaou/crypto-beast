@@ -73,15 +73,23 @@ class RiskManager:
             leverage = max(3, self.config.leverage_medium_confidence // 2)
 
         # Calculate available capital per position
-        # Reserve capital equally among max positions
-        max_per_position = portfolio.equity / self.config.max_concurrent_positions
-        # Account for already-used margin
         used_margin = sum(
             pos.quantity * pos.entry_price / pos.leverage
             for pos in portfolio.positions
         )
         available = portfolio.equity - used_margin
-        capital_for_this = min(max_per_position, available * 0.9)  # 10% buffer
+
+        # Check minimum notional requirement for this symbol
+        min_notional = MIN_NOTIONAL.get(signal.symbol, DEFAULT_MIN_NOTIONAL)
+        min_margin_needed = min_notional / leverage
+
+        # Allocate capital: ensure at least min_margin_needed, cap at 50% of equity
+        remaining_slots = self.config.max_concurrent_positions - len(portfolio.positions)
+        if remaining_slots <= 0:
+            return None
+        max_per_position = available / remaining_slots
+        capital_for_this = max(min_margin_needed * 1.05, max_per_position)  # 5% buffer above minimum
+        capital_for_this = min(capital_for_this, available * 0.95, portfolio.equity * 0.5)
 
         if capital_for_this <= 0:
             logger.debug("Signal rejected: no available capital")

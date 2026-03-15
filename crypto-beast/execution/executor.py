@@ -55,9 +55,12 @@ class LiveExecutor:
         return precisions.get(binance_sym, 3)
 
     def _round_qty(self, symbol: str, qty: float) -> float:
-        """Round quantity to symbol's precision."""
+        """Round quantity UP to symbol's precision to meet minimum notional."""
+        import math
         precision = self._get_qty_precision(symbol)
-        rounded = round(qty, precision)
+        factor = 10 ** precision
+        # Round UP to ensure we meet minimum notional
+        rounded = math.ceil(qty * factor) / factor
         # Ensure minimum quantity
         min_qty = 10 ** (-precision)
         return max(rounded, min_qty)

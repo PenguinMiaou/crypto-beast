@@ -492,8 +492,9 @@ class TradingBot:
                     logger.debug("Fee budget exceeded, skipping")
                     continue
 
-                # Create execution plan via SmartOrder
-                plan = m["smart_order"].plan_execution(order, urgency=signal.confidence)
+                # Create execution plan — small accounts use single entry (no DCA split)
+                urgency = 1.0 if portfolio.equity < 500 else signal.confidence
+                plan = m["smart_order"].plan_execution(order, urgency=urgency)
 
                 # Execute
                 result = await m["executor"].execute(plan)
