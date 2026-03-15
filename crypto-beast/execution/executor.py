@@ -1,6 +1,7 @@
 """Live Binance Futures executor — direct API for hedge mode compatibility."""
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional, Dict
 from uuid import uuid4
 
@@ -191,71 +192,83 @@ class LiveExecutor:
 
     async def _place_exit_orders(self, signal, plan, filled_qty: float,
                                   position_side: str) -> List[str]:
-        """Place TP and SL orders after entry.
+        """Place TP and SL via Binance Algo Order API (hedge mode compatible).
 
-        Uses fallback chain for hedge mode compatibility:
-        1. STOP_MARKET / TAKE_PROFIT_MARKET (without reduceOnly)
-        2. STOP / TAKE_PROFIT limit orders
-        3. Log warning if both fail
+        Uses /fapi/v1/algoOrder with algoType=CONDITIONAL.
+        These orders persist on the exchange — survive bot crashes.
         """
         exit_ids: List[str] = []
         close_side = "SELL" if signal.direction == Direction.LONG else "BUY"
+        binance_sym = self._to_binance_symbol(signal.symbol)
 
-        # TP orders
+        # SL stop-market order (most important — placed first)
+        if signal.stop_loss and filled_qty > 0:
+            qty = self._round_qty(signal.symbol, filled_qty)
+            try:
+                result = await self._place_algo_order(
+                    binance_sym, close_side, position_side,
+                    "STOP_MARKET", qty, signal.stop_loss)
+                algo_id = result.get("algoId", "")
+                exit_ids.append(str(algo_id))
+                logger.info(f"SL placed: {close_side} {signal.symbol} {qty} @ stop={signal.stop_loss} | algoId={algo_id}")
+            except Exception as e:
+                logger.warning(f"SL order failed: {e}")
+
+        # TP take-profit-market orders
         for tranche in plan.exit_tranches:
             try:
                 qty = min(tranche["quantity"], filled_qty)
                 qty = self._round_qty(signal.symbol, qty)
                 if qty <= 0:
                     continue
-                tp_price = tranche["price"]
-                # Try TAKE_PROFIT_MARKET first (no limit price needed)
-                try:
-                    result = await self._place_order(
-                        signal.symbol, close_side, position_side,
-                        "TAKE_PROFIT_MARKET", qty,
-                        stop_price=tp_price,
-                    )
-                    exit_ids.append(str(result.get("orderId", "")))
-                    logger.info(f"TP placed (TAKE_PROFIT_MARKET): {close_side} {signal.symbol} {qty} @ {tp_price}")
-                except Exception as e1:
-                    logger.debug(f"TAKE_PROFIT_MARKET failed, trying TAKE_PROFIT limit: {e1}")
-                    # Fallback: TAKE_PROFIT limit order
-                    try:
-                        result = await self._place_tp_limit(
-                            signal.symbol, close_side, position_side, qty, tp_price)
-                        exit_ids.append(str(result.get("orderId", "")))
-                        logger.info(f"TP placed (TAKE_PROFIT limit): {close_side} {signal.symbol} {qty} @ {tp_price}")
-                    except Exception as e2:
-                        logger.warning(f"TP order failed (all methods): {e2}")
+                result = await self._place_algo_order(
+                    binance_sym, close_side, position_side,
+                    "TAKE_PROFIT_MARKET", qty, tranche["price"])
+                algo_id = result.get("algoId", "")
+                exit_ids.append(str(algo_id))
+                logger.info(f"TP placed: {close_side} {signal.symbol} {qty} @ {tranche['price']} | algoId={algo_id}")
             except Exception as e:
                 logger.warning(f"TP order failed: {e}")
 
-        # SL stop-market order
-        if signal.stop_loss and filled_qty > 0:
-            qty = self._round_qty(signal.symbol, filled_qty)
-            sl_price = signal.stop_loss
-            # Try STOP_MARKET first (without reduceOnly — hedge mode uses positionSide)
-            try:
-                result = await self._place_order(
-                    signal.symbol, close_side, position_side, "STOP_MARKET", qty,
-                    stop_price=sl_price,
-                )
-                exit_ids.append(str(result.get("orderId", "")))
-                logger.info(f"SL placed (STOP_MARKET): {close_side} {signal.symbol} {qty} @ stop={sl_price}")
-            except Exception as e1:
-                logger.debug(f"STOP_MARKET failed, trying STOP limit: {e1}")
-                # Fallback: STOP limit order with slightly worse limit price
-                try:
-                    result = await self._place_sl_limit(
-                        signal.symbol, close_side, position_side, qty, sl_price,
-                        is_long=(signal.direction == Direction.LONG))
-                    exit_ids.append(str(result.get("orderId", "")))
-                    logger.info(f"SL placed (STOP limit): {close_side} {signal.symbol} {qty} @ stop={sl_price}")
-                except Exception as e2:
-                    logger.warning(f"SL order failed (all methods): {e2}")
-
         return exit_ids
+
+    async def _place_algo_order(self, binance_sym: str, side: str,
+                                 position_side: str, order_type: str,
+                                 qty: float, trigger_price: float) -> dict:
+        """Place order via Binance Algo Order API (/fapi/v1/algoOrder).
+
+        Required for STOP_MARKET/TAKE_PROFIT_MARKET in hedge mode since 2025-12-09.
+        """
+        import aiohttp, hmac, hashlib, time as _time
+        from urllib.parse import urlencode
+        from dotenv import dotenv_values
+
+        env = dotenv_values(str(Path(__file__).parent.parent / ".env"))
+        api_key = env.get("BINANCE_API_KEY", "")
+        api_secret = env.get("BINANCE_API_SECRET", "")
+
+        params = {
+            "symbol": binance_sym,
+            "side": side.upper(),
+            "positionSide": position_side.upper(),
+            "algoType": "CONDITIONAL",
+            "type": order_type,
+            "quantity": str(qty),
+            "triggerPrice": str(round(trigger_price, 2)),
+            "workingType": "MARK_PRICE",
+            "timestamp": int(_time.time() * 1000),
+        }
+        query = urlencode(params)
+        signature = hmac.new(api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+        url = f"https://fapi.binance.com/fapi/v1/algoOrder?{query}&signature={signature}"
+
+        await self.rate_limiter.acquire_order_slot()
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers={"X-MBX-APIKEY": api_key}) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise Exception(f"Algo order failed ({resp.status}): {text}")
+                return await resp.json()
 
     async def _place_sl_limit(self, symbol: str, side: str, position_side: str,
                                qty: float, stop_price: float,
