@@ -1,6 +1,6 @@
 """Whale Tracker - Monitors large trades (>$100k) for directional bias."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 from core.models import DirectionalBias, SignalType
@@ -22,12 +22,13 @@ class WhaleTracker:
             self._large_trades.append({
                 "side": "BUY" if not trade.get("is_buyer_maker", True) else "SELL",
                 "notional": notional,
-                "timestamp": trade.get("timestamp", datetime.utcnow()),
+                "timestamp": trade.get("timestamp", datetime.now(timezone.utc)),
             })
             # Keep only last 15 min
-            cutoff = datetime.utcnow() - timedelta(minutes=15)
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
             self._large_trades = [
-                t for t in self._large_trades if t["timestamp"] > cutoff
+                t for t in self._large_trades
+                if (t["timestamp"].replace(tzinfo=timezone.utc) if t["timestamp"].tzinfo is None else t["timestamp"]) > cutoff
             ]
 
     def get_signal(self, symbol: str = "BTCUSDT") -> DirectionalBias:

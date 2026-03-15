@@ -1,6 +1,6 @@
 """Liquidation Hunter - Detects liquidation cascades for reversal entries."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from core.models import DirectionalBias, SignalType
@@ -18,18 +18,22 @@ class LiquidationHunter:
         """Process a forceOrder event."""
         self._events.append(event)
         # Prune old events (keep last 30 min)
-        cutoff = datetime.utcnow() - timedelta(minutes=30)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
         self._events = [
             e for e in self._events
-            if e.get("timestamp", datetime.utcnow()) > cutoff
+            if self._ensure_aware(e.get("timestamp", datetime.now(timezone.utc))) > cutoff
         ]
+
+    @staticmethod
+    def _ensure_aware(dt: datetime) -> datetime:
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
     def _get_window_volume(self, side: Optional[str] = None) -> float:
         """Get total liquidation volume in current window."""
-        cutoff = datetime.utcnow() - timedelta(minutes=self.window_minutes)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.window_minutes)
         events = [
             e for e in self._events
-            if e.get("timestamp", datetime.utcnow()) > cutoff
+            if self._ensure_aware(e.get("timestamp", datetime.now(timezone.utc))) > cutoff
         ]
         if side:
             events = [e for e in events if e.get("side") == side]
