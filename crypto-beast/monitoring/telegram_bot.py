@@ -104,11 +104,18 @@ class TelegramBot:
         """Send reply to Telegram."""
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         async with aiohttp.ClientSession() as session:
-            await session.post(url, json={
+            # Try Markdown first, fall back to plain text if formatting fails
+            resp = await session.post(url, json={
                 "chat_id": self.chat_id,
                 "text": text,
                 "parse_mode": "Markdown",
             }, timeout=aiohttp.ClientTimeout(total=10))
+            if resp.status != 200:
+                # Markdown failed (likely special chars like $), send as plain text
+                await session.post(url, json={
+                    "chat_id": self.chat_id,
+                    "text": text,
+                }, timeout=aiohttp.ClientTimeout(total=10))
 
     # === Command Handlers ===
 
