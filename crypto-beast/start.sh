@@ -8,7 +8,7 @@ PIDFILE="$DIR/bot.pid"
 echo "=== Crypto Beast v1.0 ==="
 
 # Kill existing bot by name (won't conflict with other main.py)
-for pid in $(ps aux | grep "[p]ython.*crypto_system.py" | awk '{print $2}'); do
+for pid in $(ps aux | grep "[c]rypto_system" | awk '{print $2}'); do
     echo "Killing old process $pid"
     kill -9 "$pid" 2>/dev/null || true
 done
