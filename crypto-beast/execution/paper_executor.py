@@ -40,8 +40,8 @@ class PaperExecutor:
 
         # Record in database
         self.db.execute(
-            """INSERT INTO trades (symbol, side, entry_price, quantity, leverage, strategy, entry_time, fees, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO trades (symbol, side, entry_price, quantity, leverage, strategy, entry_time, fees, status, stop_loss, take_profit)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 signal.symbol,
                 signal.direction.value,
@@ -52,6 +52,8 @@ class PaperExecutor:
                 datetime.utcnow().isoformat(),
                 round(fees, 6),
                 "OPEN",
+                signal.stop_loss,
+                signal.take_profit,
             ),
         )
 

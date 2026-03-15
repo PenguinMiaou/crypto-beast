@@ -1,18 +1,17 @@
 # data/data_feed.py
-import asyncio
 from collections import defaultdict
-from datetime import datetime
 
 import pandas as pd
 from loguru import logger
 
 
 class DataFeed:
-    def __init__(self, symbols: list[str] = None, intervals: list[str] = None, rate_limiter=None):
+    def __init__(self, symbols=None, intervals=None, rate_limiter=None, exchange=None):
         self.symbols = symbols or ["BTCUSDT"]
         self.intervals = intervals or ["5m", "15m", "1h", "4h"]
         self.rate_limiter = rate_limiter
-        self._cache: dict[str, dict[str, pd.DataFrame]] = defaultdict(lambda: defaultdict(pd.DataFrame))
+        self._exchange = exchange
+        self._cache: dict = defaultdict(lambda: defaultdict(pd.DataFrame))
         self._connected = False
 
     async def connect(self) -> None:
@@ -27,18 +26,15 @@ class DataFeed:
         logger.info("DataFeed disconnected")
 
     async def fetch_historical(self, symbol: str, interval: str, limit: int = 500) -> pd.DataFrame:
-        """Fetch historical klines via REST API."""
+        """Fetch historical klines via REST API using shared exchange."""
+        if self._exchange is None:
+            logger.warning(f"No exchange set, cannot fetch {symbol} {interval}")
+            return pd.DataFrame()
         if self.rate_limiter:
             await self.rate_limiter.acquire_data_slot()
         try:
-            import ccxt.async_support as ccxt
-
-            exchange = ccxt.binance({"options": {"defaultType": "future"}})
-            timeframe_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h"}
-            ohlcv = await exchange.fetch_ohlcv(
-                symbol.replace("USDT", "/USDT"), timeframe_map[interval], limit=limit
-            )
-            await exchange.close()
+            ccxt_symbol = symbol.replace("USDT", "/USDT")
+            ohlcv = await self._exchange.fetch_ohlcv(ccxt_symbol, interval, limit=limit)
 
             df = pd.DataFrame(ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"])
             df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")

@@ -122,6 +122,7 @@ class TradingBot:
                 symbols=["BTCUSDT"],
                 intervals=["5m", "15m", "1h", "4h"],
                 rate_limiter=rate_limiter,
+                exchange=self.exchange,
             )
 
             # Analysis
@@ -171,6 +172,10 @@ class TradingBot:
                     rate_limiter=rate_limiter,
                 )
 
+            # Position management (SL/TP)
+            from execution.position_manager import PositionManager
+            position_manager = PositionManager(db=self.db, get_price_fn=get_price)
+
             # Evolution
             compound_engine = CompoundEngine(self.config, self.db)
             evolver = Evolver(self.config, self.db)
@@ -203,6 +208,7 @@ class TradingBot:
                 "emergency_shield": emergency_shield,
                 "recovery_mode": recovery_mode,
                 "executor": executor,
+                "position_manager": position_manager,
                 "compound_engine": compound_engine,
                 "evolver": evolver,
                 "trade_reviewer": trade_reviewer,
@@ -269,7 +275,20 @@ class TradingBot:
 
         # 3. Build portfolio state
         positions = await m["executor"].get_positions()
-        equity = self.config.starting_capital  # Paper mode: static capital
+
+        # Calculate real equity from DB
+        closed_pnl = self.db.execute(
+            "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status = 'CLOSED'"
+        ).fetchone()[0]
+        open_fees = self.db.execute(
+            "SELECT COALESCE(SUM(fees), 0) FROM trades WHERE status = 'OPEN'"
+        ).fetchone()[0]
+        equity = self.config.starting_capital + closed_pnl - open_fees
+
+        # Add unrealized PnL from open positions
+        for pos in positions:
+            equity += pos.unrealized_pnl
+
         self._peak_equity = max(self._peak_equity, equity)
         drawdown = (self._peak_equity - equity) / self._peak_equity if self._peak_equity > 0 else 0
 
@@ -392,8 +411,18 @@ class TradingBot:
                         f"strategy={signal.strategy} | conf={signal.confidence:.3f}"
                     )
 
-        # 11. Check existing positions for stop/TP
-        # (In paper mode, stops/TPs are not auto-managed yet)
+        # 11. Check existing positions for SL/TP
+        to_close = m["position_manager"].check_positions()
+        for trade in to_close:
+            m["position_manager"].close_trade(trade)
+            self._daily_pnl += trade["pnl"]
+            self._daily_fees += trade["fees"]
+            m["notifier"].send(
+                f"Trade Closed ({trade['reason']})",
+                f"{trade['side']} {trade['symbol']} | Entry=${trade['entry_price']:,.2f} → "
+                f"Exit=${trade['exit_price']:,.2f} | PnL={trade['pnl']:+.4f} | {trade['strategy']}",
+                level="warning" if trade["reason"] == "STOP_LOSS" else "info",
+            )
 
         # 12. Update compound sizing
         m["compound_engine"].update_position_sizing(portfolio)
@@ -432,10 +461,25 @@ class TradingBot:
             # Daily review at 00:05 UTC
             if now.hour == 0 and now.minute == 5:
                 logger.info("Running daily trade review")
+                try:
+                    trades = self.db.execute(
+                        "SELECT * FROM trades WHERE status = 'CLOSED' AND exit_time >= date('now', '-1 day')"
+                    ).fetchall()
+                    if trades:
+                        trade_dicts = [{"id": t[0], "pnl": t[7], "fees": t[8], "side": t[2],
+                                       "regime": "RANGING", "strategy": t[9]} for t in trades]
+                        report = m["trade_reviewer"].generate_report(trade_dicts)
+                        logger.info(f"Daily review: {report.wins}W/{report.losses}L | Recommendations: {report.recommendations[:3]}")
+                except Exception as e:
+                    logger.error(f"Daily review failed: {e}")
 
             # Daily evolution at 00:10 UTC
             if now.hour == 0 and now.minute == 10:
                 logger.info("Running daily evolution")
+                try:
+                    m["evolver"].apply_if_pending()
+                except Exception as e:
+                    logger.error(f"Daily evolution failed: {e}")
 
             # Reset daily counters at midnight
             if now.hour == 0 and now.minute == 0:
@@ -454,9 +498,16 @@ class TradingBot:
             # Equity snapshot every hour
             if now.minute == 0 and self.db:
                 try:
+                    closed_pnl = self.db.execute(
+                        "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status = 'CLOSED'"
+                    ).fetchone()[0]
+                    open_fees = self.db.execute(
+                        "SELECT COALESCE(SUM(fees), 0) FROM trades WHERE status = 'OPEN'"
+                    ).fetchone()[0]
+                    snap_equity = self.config.starting_capital + closed_pnl - open_fees
                     self.db.execute(
-                        "INSERT INTO equity_snapshots (timestamp, equity, drawdown_pct) VALUES (?, ?, ?)",
-                        (now.isoformat(), self.config.starting_capital, 0.0))
+                        "INSERT INTO equity_snapshots (timestamp, equity) VALUES (?, ?)",
+                        (now.isoformat(), snap_equity))
                 except Exception:
                     pass
 
@@ -477,9 +528,16 @@ class TradingBot:
         # Save equity snapshot
         if self.db:
             try:
+                closed_pnl = self.db.execute(
+                    "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status = 'CLOSED'"
+                ).fetchone()[0]
+                open_fees = self.db.execute(
+                    "SELECT COALESCE(SUM(fees), 0) FROM trades WHERE status = 'OPEN'"
+                ).fetchone()[0]
+                snap_equity = self.config.starting_capital + closed_pnl - open_fees
                 self.db.execute(
-                    "INSERT INTO equity_snapshots (timestamp, equity, drawdown_pct) VALUES (?, ?, ?)",
-                    (datetime.now(timezone.utc).isoformat(), self.config.starting_capital, 0.0))
+                    "INSERT INTO equity_snapshots (timestamp, equity) VALUES (?, ?)",
+                    (datetime.now(timezone.utc).isoformat(), snap_equity))
             except Exception:
                 pass
 

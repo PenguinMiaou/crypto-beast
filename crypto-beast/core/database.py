@@ -34,7 +34,9 @@ class Database:
             exit_time TIMESTAMP,
             pnl REAL,
             fees REAL,
-            status TEXT DEFAULT 'OPEN'
+            status TEXT DEFAULT 'OPEN',
+            stop_loss REAL,
+            take_profit REAL
         );
 
         CREATE TABLE IF NOT EXISTS equity_snapshots (
