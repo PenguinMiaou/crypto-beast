@@ -58,7 +58,7 @@
 - Strategies: `BaseStrategy.generate(klines, symbol, regime) -> list[TradeSignal]`
 - Data modules: `process_event(data)` to feed, `get_signal(symbol)` to read
 - LiveExecutor: `_place_order()` wraps `fapiPrivatePostOrder`, `_place_algo_order()` for SL/TP
-- Dashboard: reads live from Binance API
+- Dashboard: Positions/Orders/Trade History read live from Binance API; Strategies tab reads from local DB (only shows CLOSED trades)
 - Config: `config.py` dataclass, `.env` for credentials
 
 ## User
