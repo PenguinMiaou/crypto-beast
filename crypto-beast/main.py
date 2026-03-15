@@ -271,17 +271,23 @@ class TradingBot:
             return False
 
     async def reconcile_with_exchange(self) -> None:
-        """Sync local DB with actual Binance state on startup."""
+        """Sync local DB with Binance. Preserves SL/TP/strategy if already in DB."""
         logger.info("Reconciling with Binance...")
 
-        # Get actual positions from Binance
         account = await self.exchange.fapiPrivateV2GetAccount()
         positions = [p for p in account.get("positions", []) if float(p.get("positionAmt", 0)) != 0]
 
-        # Clear stale DB trades
-        self.db.execute("DELETE FROM trades WHERE status = 'OPEN'")
+        db_trades = self.db.execute(
+            "SELECT id, symbol FROM trades WHERE status = 'OPEN'"
+        ).fetchall()
+        db_symbols = {row[1] for row in db_trades}
+        exchange_symbols = {pos["symbol"] for pos in positions}
 
-        # Insert actual positions
+        # Remove stale DB trades not on exchange
+        for symbol in db_symbols - exchange_symbols:
+            self.db.execute("DELETE FROM trades WHERE symbol = ? AND status = 'OPEN'", (symbol,))
+            logger.info(f"  Removed stale: {symbol}")
+
         for pos in positions:
             symbol = pos["symbol"]
             amt = float(pos["positionAmt"])
@@ -289,15 +295,21 @@ class TradingBot:
             entry_price = float(pos.get("entryPrice", 0))
             leverage = int(pos.get("leverage", 1))
             unrealized = float(pos.get("unrealizedProfit", 0))
-            notional = abs(float(pos.get("notional", 0)))
 
-            self.db.execute(
-                """INSERT INTO trades (symbol, side, entry_price, quantity, leverage, strategy, entry_time, fees, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (symbol, side, entry_price, abs(amt), leverage, "reconciled",
-                 datetime.now(timezone.utc).isoformat(), 0, "OPEN")
-            )
-            logger.info(f"  Reconciled: {side} {symbol} qty={abs(amt)} @ {entry_price} {leverage}x | PnL={unrealized:+.2f}")
+            if symbol in db_symbols:
+                # Already in DB — update qty/entry but keep SL/TP/strategy
+                self.db.execute(
+                    "UPDATE trades SET quantity=?, entry_price=?, leverage=? WHERE symbol=? AND status='OPEN'",
+                    (abs(amt), entry_price, leverage, symbol))
+                logger.info(f"  Synced: {side} {symbol} qty={abs(amt)} @ {entry_price} | PnL={unrealized:+.2f}")
+            else:
+                # New position — insert
+                self.db.execute(
+                    """INSERT INTO trades (symbol, side, entry_price, quantity, leverage, strategy, entry_time, fees, status)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (symbol, side, entry_price, abs(amt), leverage, "reconciled",
+                     datetime.now(timezone.utc).isoformat(), 0, "OPEN"))
+                logger.info(f"  Added: {side} {symbol} qty={abs(amt)} @ {entry_price} {leverage}x | PnL={unrealized:+.2f}")
 
         # Cancel all open orders to start clean
         try:
