@@ -25,8 +25,8 @@
 - Account uses **hedge mode (dual position)** — all orders need `positionSide: LONG/SHORT`
 - ccxt high-level methods don't pass positionSide correctly — use `fapiPrivatePostOrder` direct API
 - `reduceOnly` param NOT supported in hedge mode — positionSide handles it
-- SL orders: try STOP_MARKET first, fallback to STOP limit order
-- TP orders: try TAKE_PROFIT_MARKET first, fallback to TAKE_PROFIT limit order
+- SL/TP: use Algo Order API `/fapi/v1/algoOrder` with `algoType=CONDITIONAL` (mandatory since 2025-12-09)
+- Old `/fapi/v1/order` endpoint rejects STOP_MARKET/TAKE_PROFIT_MARKET with error -4120
 - BTC min notional: $100, ETH/SOL/others: $20
 - Qty must be rounded UP (`math.ceil`) to meet min notional
 - Small accounts (<$500): use single entry (urgency=1.0), no DCA split
@@ -37,6 +37,7 @@
 - On startup: `reconcile_with_exchange()` syncs DB with Binance actual positions
 - Preserves existing SL/TP/strategy if position already in DB
 - Only adds new positions or removes stale ones — doesn't wipe and re-insert
+- NEVER delete crypto_beast.db on restart — reconciliation handles sync, deleting loses SL/TP data
 - datetime: always use `datetime.now(timezone.utc)` (aware), never `datetime.utcnow()` (naive)
 
 ## Telegram Bot
