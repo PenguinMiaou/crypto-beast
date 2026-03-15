@@ -115,3 +115,95 @@ class TestCloseTrade:
         # Second check should find nothing
         results2 = pm.check_positions()
         assert len(results2) == 0
+
+
+class TestProfitProtection:
+    """Tests for unified profit protection (activation + drawback)."""
+
+    def test_profit_protection_triggered(self, db):
+        """Peak profit +3%, drops to +1.5% (50% drawback) -> PROFIT_PROTECT."""
+        _insert_trade(db, entry_price=65000.0, stop_loss=None, take_profit=None)
+        prices = [None]
+
+        def get_price(s):
+            return prices[0]
+
+        pm = PositionManager(db, get_price,
+                             profit_protect_activation_pct=0.02,
+                             profit_protect_drawback_pct=0.50)
+
+        # Peak at +3%
+        prices[0] = 65000.0 * 1.03
+        result = pm.check_positions()
+        assert len(result) == 0  # At peak, no drawback
+
+        # Drop to +1.5% profit (50% of 3% given back)
+        prices[0] = 65000.0 * 1.015
+        result = pm.check_positions()
+        assert len(result) == 1
+        assert result[0]["reason"] == "PROFIT_PROTECT"
+
+    def test_profit_protection_short(self, db):
+        """SHORT: peak profit +3%, bounces back 50% -> PROFIT_PROTECT."""
+        _insert_trade(db, side="SHORT", entry_price=65000.0,
+                      stop_loss=None, take_profit=None)
+        prices = [None]
+
+        def get_price(s):
+            return prices[0]
+
+        pm = PositionManager(db, get_price,
+                             profit_protect_activation_pct=0.02,
+                             profit_protect_drawback_pct=0.50)
+
+        # SHORT profits when price drops. Peak at -3%
+        prices[0] = 65000.0 * 0.97  # 3% profit for short
+        result = pm.check_positions()
+        assert len(result) == 0
+
+        # Price bounces back, profit drops to +1.5% (50% given back)
+        prices[0] = 65000.0 * 0.985
+        result = pm.check_positions()
+        assert len(result) == 1
+        assert result[0]["reason"] == "PROFIT_PROTECT"
+
+    def test_profit_protection_not_triggered_small_drawback(self, db):
+        """Position profits +3%, drops to +2.5% (only 17% drawback) -> no trigger."""
+        _insert_trade(db, entry_price=65000.0, stop_loss=None, take_profit=None)
+        prices = [None]
+
+        def get_price(s):
+            return prices[0]
+
+        pm = PositionManager(db, get_price)
+
+        # Peak at +3%
+        peak_price = 65000.0 * 1.03
+        prices[0] = peak_price
+        result = pm.check_positions()
+        assert len(result) == 0
+
+        # Drop to +2.5% (drawback = (3-2.5)/3 = 16.7%, below 50%)
+        prices[0] = 65000.0 * 1.025
+        result = pm.check_positions()
+        assert len(result) == 0
+
+    def test_profit_protection_not_activated_low_profit(self, db):
+        """Position profits only +1% (below 2% activation) -> no protection."""
+        _insert_trade(db, entry_price=65000.0, stop_loss=None, take_profit=None)
+        prices = [None]
+
+        def get_price(s):
+            return prices[0]
+
+        pm = PositionManager(db, get_price)
+
+        # Peak at only +1% (below 2% activation)
+        prices[0] = 65000.0 * 1.01
+        result = pm.check_positions()
+        assert len(result) == 0
+
+        # Even 100% drawback won't trigger if peak was below activation
+        prices[0] = 65000.0
+        result = pm.check_positions()
+        assert len(result) == 0

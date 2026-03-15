@@ -191,40 +191,114 @@ class LiveExecutor:
 
     async def _place_exit_orders(self, signal, plan, filled_qty: float,
                                   position_side: str) -> List[str]:
-        """Place TP and SL orders after entry."""
+        """Place TP and SL orders after entry.
+
+        Uses fallback chain for hedge mode compatibility:
+        1. STOP_MARKET / TAKE_PROFIT_MARKET (without reduceOnly)
+        2. STOP / TAKE_PROFIT limit orders
+        3. Log warning if both fail
+        """
         exit_ids: List[str] = []
         close_side = "SELL" if signal.direction == Direction.LONG else "BUY"
 
-        # TP limit orders
+        # TP orders
         for tranche in plan.exit_tranches:
             try:
                 qty = min(tranche["quantity"], filled_qty)
                 qty = self._round_qty(signal.symbol, qty)
                 if qty <= 0:
                     continue
-                result = await self._place_order(
-                    signal.symbol, close_side, position_side, "LIMIT", qty,
-                    price=tranche["price"], reduce_only=True,
-                )
-                exit_ids.append(str(result.get("orderId", "")))
-                logger.info(f"TP placed: {close_side} {signal.symbol} {qty} @ {tranche['price']}")
+                tp_price = tranche["price"]
+                # Try TAKE_PROFIT_MARKET first (no limit price needed)
+                try:
+                    result = await self._place_order(
+                        signal.symbol, close_side, position_side,
+                        "TAKE_PROFIT_MARKET", qty,
+                        stop_price=tp_price,
+                    )
+                    exit_ids.append(str(result.get("orderId", "")))
+                    logger.info(f"TP placed (TAKE_PROFIT_MARKET): {close_side} {signal.symbol} {qty} @ {tp_price}")
+                except Exception as e1:
+                    logger.debug(f"TAKE_PROFIT_MARKET failed, trying TAKE_PROFIT limit: {e1}")
+                    # Fallback: TAKE_PROFIT limit order
+                    try:
+                        result = await self._place_tp_limit(
+                            signal.symbol, close_side, position_side, qty, tp_price)
+                        exit_ids.append(str(result.get("orderId", "")))
+                        logger.info(f"TP placed (TAKE_PROFIT limit): {close_side} {signal.symbol} {qty} @ {tp_price}")
+                    except Exception as e2:
+                        logger.warning(f"TP order failed (all methods): {e2}")
             except Exception as e:
                 logger.warning(f"TP order failed: {e}")
 
         # SL stop-market order
         if signal.stop_loss and filled_qty > 0:
+            qty = self._round_qty(signal.symbol, filled_qty)
+            sl_price = signal.stop_loss
+            # Try STOP_MARKET first (without reduceOnly — hedge mode uses positionSide)
             try:
-                qty = self._round_qty(signal.symbol, filled_qty)
                 result = await self._place_order(
                     signal.symbol, close_side, position_side, "STOP_MARKET", qty,
-                    stop_price=signal.stop_loss, reduce_only=True,
+                    stop_price=sl_price,
                 )
                 exit_ids.append(str(result.get("orderId", "")))
-                logger.info(f"SL placed: {close_side} {signal.symbol} {qty} @ stop={signal.stop_loss}")
-            except Exception as e:
-                logger.warning(f"SL order failed: {e}")
+                logger.info(f"SL placed (STOP_MARKET): {close_side} {signal.symbol} {qty} @ stop={sl_price}")
+            except Exception as e1:
+                logger.debug(f"STOP_MARKET failed, trying STOP limit: {e1}")
+                # Fallback: STOP limit order with slightly worse limit price
+                try:
+                    result = await self._place_sl_limit(
+                        signal.symbol, close_side, position_side, qty, sl_price,
+                        is_long=(signal.direction == Direction.LONG))
+                    exit_ids.append(str(result.get("orderId", "")))
+                    logger.info(f"SL placed (STOP limit): {close_side} {signal.symbol} {qty} @ stop={sl_price}")
+                except Exception as e2:
+                    logger.warning(f"SL order failed (all methods): {e2}")
 
         return exit_ids
+
+    async def _place_sl_limit(self, symbol: str, side: str, position_side: str,
+                               qty: float, stop_price: float,
+                               is_long: bool) -> dict:
+        """Place a STOP limit order as fallback for STOP_MARKET."""
+        binance_sym = self._to_binance_symbol(symbol)
+        # For LONG close (SELL), limit price slightly below stop to ensure fill
+        # For SHORT close (BUY), limit price slightly above stop
+        slippage = 0.005  # 0.5% slippage tolerance
+        if is_long:
+            limit_price = round(stop_price * (1 - slippage), 2)
+        else:
+            limit_price = round(stop_price * (1 + slippage), 2)
+
+        params = {
+            "symbol": binance_sym,
+            "side": side.upper(),
+            "positionSide": position_side.upper(),
+            "type": "STOP",
+            "quantity": str(self._round_qty(symbol, qty)),
+            "price": str(limit_price),
+            "stopPrice": str(round(stop_price, 2)),
+            "timeInForce": "GTC",
+        }
+        await self.rate_limiter.acquire_order_slot()
+        return await self.exchange.fapiPrivatePostOrder(params)
+
+    async def _place_tp_limit(self, symbol: str, side: str, position_side: str,
+                               qty: float, tp_price: float) -> dict:
+        """Place a TAKE_PROFIT limit order as fallback for TAKE_PROFIT_MARKET."""
+        binance_sym = self._to_binance_symbol(symbol)
+        params = {
+            "symbol": binance_sym,
+            "side": side.upper(),
+            "positionSide": position_side.upper(),
+            "type": "TAKE_PROFIT",
+            "quantity": str(self._round_qty(symbol, qty)),
+            "price": str(round(tp_price, 2)),
+            "stopPrice": str(round(tp_price, 2)),
+            "timeInForce": "GTC",
+        }
+        await self.rate_limiter.acquire_order_slot()
+        return await self.exchange.fapiPrivatePostOrder(params)
 
     async def get_positions(self) -> List[Position]:
         """Fetch open positions from exchange via direct fapi call."""

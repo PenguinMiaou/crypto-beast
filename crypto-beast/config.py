@@ -60,6 +60,14 @@ class Config:
     # MultiTimeframe
     mtf_min_confluence: int = 6
 
+    # Trailing stop
+    trailing_activation_pct: float = 0.015  # Activate after 1.5% profit
+    trailing_distance_pct: float = 0.008    # Trail by 0.8%
+
+    # Profit protection
+    profit_protect_activation_pct: float = 0.02   # Activate after 2% profit
+    profit_protect_drawback_pct: float = 0.50      # Close if 50% of profit given back
+
     # System
     main_loop_interval: int = 5
     api_latency_warn: int = 500
