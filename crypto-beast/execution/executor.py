@@ -1,6 +1,6 @@
 """Live Binance Futures executor — direct API for hedge mode compatibility."""
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Dict
 from uuid import uuid4
 
@@ -227,24 +227,26 @@ class LiveExecutor:
         return exit_ids
 
     async def get_positions(self) -> List[Position]:
-        """Fetch open positions from exchange."""
+        """Fetch open positions from exchange via direct fapi call."""
         try:
             await self.rate_limiter.acquire_data_slot()
-            positions = await self.exchange.fetch_positions()
+            account = await self.exchange.fapiPrivateV2GetAccount()
             result: List[Position] = []
-            for pos in positions:
-                if float(pos.get("contracts", 0)) > 0:
-                    result.append(Position(
-                        symbol=self._to_binance_symbol(pos.get("symbol", "")),
-                        direction=Direction.LONG if pos["side"] == "long" else Direction.SHORT,
-                        entry_price=float(pos.get("entryPrice", 0)),
-                        quantity=float(pos.get("contracts", 0)),
-                        leverage=int(pos.get("leverage", 1)),
-                        unrealized_pnl=float(pos.get("unrealizedPnl", 0)),
-                        strategy="unknown",
-                        entry_time=datetime.utcnow(),
-                        current_stop=0.0,
-                    ))
+            for pos in account.get("positions", []):
+                amt = float(pos.get("positionAmt", 0))
+                if amt == 0:
+                    continue
+                result.append(Position(
+                    symbol=pos["symbol"],
+                    direction=Direction.LONG if amt > 0 else Direction.SHORT,
+                    entry_price=float(pos.get("entryPrice", 0)),
+                    quantity=abs(amt),
+                    leverage=int(pos.get("leverage", 1)),
+                    unrealized_pnl=float(pos.get("unrealizedProfit", 0)),
+                    strategy="live",
+                    entry_time=datetime.now(timezone.utc),
+                    current_stop=0.0,
+                ))
             return result
         except Exception as e:
             logger.error(f"Failed to fetch positions: {e}")

@@ -1,5 +1,7 @@
-"""Crypto Beast v1.0 Dashboard — run with: streamlit run monitoring/dashboard_app.py"""
+# monitoring/dashboard_app.py
+"""Crypto Beast v1.0 Dashboard"""
 import sqlite3
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -9,6 +11,7 @@ import streamlit as st
 st.set_page_config(page_title="Crypto Beast", page_icon="robot", layout="wide")
 
 DB_PATH = Path(__file__).parent.parent / "crypto_beast.db"
+ENV_PATH = Path(__file__).parent.parent / ".env"
 
 
 def get_db():
@@ -17,156 +20,216 @@ def get_db():
     return sqlite3.connect(str(DB_PATH))
 
 
-def load_trades(db, status=None, limit=200):
-    query = "SELECT id, symbol, side, entry_price, exit_price, quantity, leverage, pnl, fees, strategy, entry_time, exit_time, status FROM trades"
-    if status:
-        query += f" WHERE status = '{status}'"
-    query += " ORDER BY entry_time DESC LIMIT ?"
-    rows = db.execute(query, (limit,)).fetchall()
-    cols = ["ID", "Symbol", "Side", "Entry", "Exit", "Qty", "Leverage", "PnL", "Fees", "Strategy", "Entry Time", "Exit Time", "Status"]
-    return pd.DataFrame(rows, columns=cols)
-
-
-def load_equity(db):
-    rows = db.execute("SELECT timestamp, equity FROM equity_snapshots ORDER BY timestamp DESC LIMIT 500").fetchall()
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame(rows, columns=["Time", "Equity"])
+def get_exchange():
+    """Get ccxt exchange instance for live data."""
+    try:
+        from dotenv import dotenv_values
+        import ccxt
+        env = dotenv_values(str(ENV_PATH))
+        return ccxt.binance({
+            'apiKey': env.get('BINANCE_API_KEY', ''),
+            'secret': env.get('BINANCE_API_SECRET', ''),
+            'options': {'defaultType': 'future'},
+            'enableRateLimit': True,
+        })
+    except Exception:
+        return None
 
 
 # === Header ===
 st.title("Crypto Beast v1.0")
 
+exchange = get_exchange()
 db = get_db()
-if db is None:
-    st.warning("Database not found. Start the bot first: `python main.py`")
-    st.stop()
 
-# === Sidebar: Bot Status ===
-st.sidebar.title("Bot Status")
-try:
-    open_count = db.execute("SELECT COUNT(*) FROM trades WHERE status='OPEN'").fetchone()[0]
-    closed_count = db.execute("SELECT COUNT(*) FROM trades WHERE status='CLOSED'").fetchone()[0]
-    st.sidebar.metric("Open Trades", open_count)
-    st.sidebar.metric("Closed Trades", closed_count)
-    if closed_count > 0:
-        total_pnl = db.execute("SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status='CLOSED'").fetchone()[0]
-        st.sidebar.metric("Total P&L", f"${total_pnl:+.2f}")
-except Exception:
-    st.sidebar.write("No data yet")
+# === Sidebar ===
+st.sidebar.title("Account")
+if exchange:
+    try:
+        account = exchange.fapiPrivateV2GetAccount()
+        wallet = float(account.get("totalWalletBalance", 0))
+        unrealized = float(account.get("totalUnrealizedProfit", 0))
+        available = float(account.get("availableBalance", 0))
+        margin_balance = wallet + unrealized
+
+        st.sidebar.metric("Margin Balance", f"${margin_balance:.2f} USDT")
+        st.sidebar.metric("Wallet", f"${wallet:.2f}")
+        st.sidebar.metric("Unrealized PnL", f"${unrealized:+.2f}")
+        st.sidebar.metric("Available", f"${available:.2f}")
+    except Exception as e:
+        st.sidebar.error(f"API Error: {e}")
+
+st.sidebar.button("Refresh")
 
 # === Tabs ===
-tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Trades", "Strategies", "System"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Positions", "Orders", "Trade History", "Strategies", "System"])
 
-# === Overview ===
+# === Tab 1: Live Positions (from Binance) ===
 with tab1:
-    trades_df = load_trades(db)
-    closed = trades_df[trades_df["Status"] == "CLOSED"] if len(trades_df) > 0 else pd.DataFrame()
-    open_trades = trades_df[trades_df["Status"] == "OPEN"] if len(trades_df) > 0 else pd.DataFrame()
+    st.subheader("Open Positions")
+    if exchange:
+        try:
+            account = exchange.fapiPrivateV2GetAccount()
+            positions = [p for p in account.get("positions", []) if float(p.get("positionAmt", 0)) != 0]
 
-    col1, col2, col3, col4 = st.columns(4)
+            if positions:
+                pos_data = []
+                for p in positions:
+                    amt = float(p["positionAmt"])
+                    entry = float(p.get("entryPrice", 0))
+                    mark = float(p.get("markPrice", 0)) if p.get("markPrice") else 0
+                    unrealized = float(p.get("unrealizedProfit", 0))
+                    notional = abs(float(p.get("notional", 0)))
+                    leverage = p.get("leverage", "1")
+                    side = "LONG" if amt > 0 else "SHORT"
+                    roi = (unrealized / (notional / int(leverage)) * 100) if notional > 0 else 0
 
-    total_pnl = closed["PnL"].sum() if len(closed) > 0 and closed["PnL"].notna().any() else 0
-    wins = len(closed[closed["PnL"] > 0]) if len(closed) > 0 else 0
-    losses = len(closed[closed["PnL"] <= 0]) if len(closed) > 0 else 0
-    win_rate = wins / len(closed) * 100 if len(closed) > 0 else 0
+                    pos_data.append({
+                        "Symbol": p["symbol"],
+                        "Side": side,
+                        "Size": f"{abs(amt)}",
+                        "Notional": f"${notional:.2f}",
+                        "Entry Price": f"${entry:,.2f}",
+                        "Mark Price": f"${mark:,.2f}" if mark else "-",
+                        "PnL (USDT)": f"${unrealized:+.2f}",
+                        "ROI": f"{roi:+.1f}%",
+                        "Leverage": f"{leverage}x",
+                    })
 
-    col1.metric("Total PnL", f"${total_pnl:+.2f}")
-    col2.metric("Open Positions", len(open_trades))
-    col3.metric("Win Rate", f"{win_rate:.0f}%", f"{wins}W / {losses}L")
-    col4.metric("Total Trades", len(trades_df))
+                df = pd.DataFrame(pos_data)
+                st.dataframe(df, use_container_width=True)
 
-    # Equity chart
-    equity_df = load_equity(db)
-    if len(equity_df) > 0:
-        st.subheader("Equity Curve")
-        st.line_chart(equity_df.set_index("Time")["Equity"])
+                # Summary
+                total_pnl = sum(float(p.get("unrealizedProfit", 0)) for p in positions)
+                total_notional = sum(abs(float(p.get("notional", 0))) for p in positions)
+                st.metric("Total Unrealized PnL", f"${total_pnl:+.2f}")
+            else:
+                st.info("No open positions")
+        except Exception as e:
+            st.error(f"Failed to load positions: {e}")
 
-    # Open positions
-    if len(open_trades) > 0:
-        st.subheader("Open Positions")
-        st.dataframe(open_trades[["Symbol", "Side", "Entry", "Qty", "Leverage", "Strategy", "Entry Time"]], use_container_width=True)
-
-# === Trades ===
+# === Tab 2: Open Orders ===
 with tab2:
-    st.subheader("Trade History")
-    if len(trades_df) > 0:
-        st.dataframe(trades_df, use_container_width=True)
-    else:
-        st.info("No trades yet. Bot is waiting for signals.")
+    st.subheader("Open Orders")
+    if exchange:
+        try:
+            orders = exchange.fetch_open_orders()
+            if orders:
+                order_data = []
+                for o in orders:
+                    order_data.append({
+                        "Time": o.get("datetime", ""),
+                        "Symbol": o.get("symbol", ""),
+                        "Type": o.get("type", ""),
+                        "Side": o.get("side", ""),
+                        "Price": f"${float(o.get('price', 0)):,.2f}",
+                        "Amount": o.get("amount", ""),
+                        "Status": o.get("status", ""),
+                    })
+                st.dataframe(pd.DataFrame(order_data), use_container_width=True)
+            else:
+                st.info("No open orders")
+        except Exception as e:
+            st.error(f"Failed to load orders: {e}")
 
-    # PnL chart
-    if len(closed) > 0 and closed["PnL"].notna().any():
-        st.subheader("PnL per Trade")
-        pnl_series = closed["PnL"].reset_index(drop=True)
-        st.bar_chart(pnl_series)
-
-        st.subheader("Cumulative PnL")
-        st.line_chart(pnl_series.cumsum())
-
-# === Strategies ===
+# === Tab 3: Trade History (from Binance) ===
 with tab3:
-    st.subheader("Strategy Performance")
-    if len(closed) > 0:
-        perf = closed.groupby("Strategy").agg(
-            Trades=("ID", "count"),
-            Wins=("PnL", lambda x: (x > 0).sum()),
-            TotalPnL=("PnL", "sum"),
-            AvgPnL=("PnL", "mean"),
-        ).reset_index()
-        perf["Win Rate"] = (perf["Wins"] / perf["Trades"] * 100).round(1)
-        st.dataframe(perf, use_container_width=True)
+    st.subheader("Recent Trades")
+    if exchange:
+        try:
+            # Get recent trades from Binance for main symbols
+            all_trades = []
+            for symbol in ["BTC/USDT", "ETH/USDT", "SOL/USDT"]:
+                try:
+                    trades = exchange.fetch_my_trades(symbol, limit=20)
+                    all_trades.extend(trades)
+                except Exception:
+                    pass
 
-        st.subheader("PnL by Strategy")
-        st.bar_chart(perf.set_index("Strategy")["TotalPnL"])
-    else:
-        st.info("No closed trades yet.")
+            if all_trades:
+                # Sort by time descending
+                all_trades.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
 
-# === System ===
+                trade_data = []
+                for t in all_trades[:30]:
+                    trade_data.append({
+                        "Time": t.get("datetime", "")[:19],
+                        "Symbol": t.get("symbol", ""),
+                        "Side": t.get("side", "").upper(),
+                        "Price": f"${float(t.get('price', 0)):,.2f}",
+                        "Amount": t.get("amount", ""),
+                        "Fee": f"${float(t.get('fee', {}).get('cost', 0)):.4f}",
+                        "PnL": f"${float(t.get('info', {}).get('realizedPnl', 0)):+.4f}",
+                    })
+                st.dataframe(pd.DataFrame(trade_data), use_container_width=True)
+            else:
+                st.info("No trades yet")
+        except Exception as e:
+            st.error(f"Failed to load trades: {e}")
+
+# === Tab 4: Strategy Performance (from local DB) ===
 with tab4:
-    st.subheader("System Info")
+    st.subheader("Strategy Performance")
+    if db:
+        try:
+            closed = pd.read_sql_query(
+                "SELECT strategy, COUNT(*) as trades, "
+                "SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins, "
+                "COALESCE(SUM(pnl), 0) as total_pnl, "
+                "COALESCE(AVG(pnl), 0) as avg_pnl "
+                "FROM trades WHERE status='CLOSED' GROUP BY strategy",
+                db
+            )
+            if len(closed) > 0:
+                closed["Win Rate"] = (closed["wins"] / closed["trades"] * 100).round(1)
+                st.dataframe(closed, use_container_width=True)
+            else:
+                st.info("No closed trades yet")
+        except Exception as e:
+            st.info("No strategy data yet")
+
+# === Tab 5: System ===
+with tab5:
+    st.subheader("System")
 
     col1, col2 = st.columns(2)
-    col1.metric("Database", "Connected" if db else "Not found")
-    col1.metric("DB Size", f"{DB_PATH.stat().st_size / 1024:.1f} KB" if DB_PATH.exists() else "N/A")
 
-    # Recent system health
-    try:
-        health = db.execute("SELECT timestamp, status, details FROM system_health ORDER BY timestamp DESC LIMIT 5").fetchall()
-        if health:
-            col2.write("Recent Health:")
-            for h in health:
-                col2.write(f"  {h[0]}: {h[1]}")
-    except Exception:
-        col2.info("Health data not available yet")
+    with col1:
+        st.write("**Connections**")
+        if exchange:
+            try:
+                ticker = exchange.fetch_ticker("BTC/USDT")
+                st.write(f"Exchange: Connected | BTC=${ticker['last']:,.2f}")
+            except Exception:
+                st.write("Exchange: Error")
 
-    # Evolution log
-    try:
-        evo = db.execute("SELECT timestamp, sharpe_before, sharpe_after FROM evolution_log ORDER BY timestamp DESC LIMIT 5").fetchall()
-        if evo:
-            st.subheader("Recent Evolution")
-            st.dataframe(pd.DataFrame(evo, columns=["Time", "Sharpe Before", "Sharpe After"]))
-    except Exception:
-        pass
+        if db:
+            try:
+                db.execute("SELECT 1").fetchone()
+                st.write("Database: Connected")
+            except Exception:
+                st.write("Database: Error")
 
-    # Recent trade activity
-    try:
-        recent = db.execute(
-            "SELECT symbol, side, entry_price, strategy, entry_time, status, pnl FROM trades ORDER BY entry_time DESC LIMIT 10"
-        ).fetchall()
-        if recent:
-            st.subheader("Recent Activity")
-            for r in recent:
-                pnl_str = f"PnL: {r[6]:+.2f}" if r[6] else "Open"
-                icon = "G" if r[1] == "LONG" else "R"
-                st.write(f"[{icon}] {r[1]} {r[0]} @ ${r[2]:,.2f} | {r[3]} | {r[5]} | {pnl_str}")
-    except Exception:
-        pass
+    with col2:
+        st.write("**Bot Config**")
+        st.write("Mode: LIVE" if os.path.exists(str(DB_PATH)) else "Not running")
+        st.write("Symbols: BTC, ETH, SOL")
+        st.write("Max Leverage: 5x")
+        st.write("Max Positions: 3")
 
-    st.subheader("How to Run")
-    st.code("python main.py          # Paper trading\npython main.py --live   # Live trading", language="bash")
+    # Recent activity from DB
+    if db:
+        try:
+            recent = pd.read_sql_query(
+                "SELECT symbol, side, entry_price, exit_price, pnl, strategy, status, entry_time "
+                "FROM trades ORDER BY entry_time DESC LIMIT 10",
+                db
+            )
+            if len(recent) > 0:
+                st.subheader("Recent Bot Activity")
+                st.dataframe(recent, use_container_width=True)
+        except Exception:
+            pass
 
-db.close()
-
-# Manual refresh button in sidebar
-st.sidebar.button("Refresh Data")
+if db:
+    db.close()

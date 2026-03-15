@@ -46,6 +46,32 @@ class MockExchange:
             "status": "FILLED",
         }
 
+    async def fapiPrivateV2GetAccount(self) -> dict:
+        return {
+            "totalWalletBalance": "1000",
+            "totalUnrealizedProfit": "1.5",
+            "availableBalance": "900",
+            "positions": [
+                {
+                    "symbol": "BTCUSDT",
+                    "positionAmt": "0.01",
+                    "entryPrice": "65000",
+                    "leverage": "5",
+                    "unrealizedProfit": "1.5",
+                    "notional": "650",
+                    "markPrice": "65150",
+                },
+                {
+                    "symbol": "ETHUSDT",
+                    "positionAmt": "0",
+                    "entryPrice": "0",
+                    "leverage": "1",
+                    "unrealizedProfit": "0",
+                    "notional": "0",
+                },
+            ],
+        }
+
     async def fetch_positions(self) -> list:
         return [
             {
@@ -206,7 +232,7 @@ class TestGetPositions:
         async def fail_fetch():
             raise Exception("connection error")
 
-        exchange.fetch_positions = fail_fetch
+        exchange.fapiPrivateV2GetAccount = fail_fetch
         executor = LiveExecutor(exchange, db, rate_limiter)
         positions = await executor.get_positions()
         assert positions == []

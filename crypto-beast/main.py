@@ -270,6 +270,48 @@ class TradingBot:
             traceback.print_exc()
             return False
 
+    async def reconcile_with_exchange(self) -> None:
+        """Sync local DB with actual Binance state on startup."""
+        logger.info("Reconciling with Binance...")
+
+        # Get actual positions from Binance
+        account = await self.exchange.fapiPrivateV2GetAccount()
+        positions = [p for p in account.get("positions", []) if float(p.get("positionAmt", 0)) != 0]
+
+        # Clear stale DB trades
+        self.db.execute("DELETE FROM trades WHERE status = 'OPEN'")
+
+        # Insert actual positions
+        for pos in positions:
+            symbol = pos["symbol"]
+            amt = float(pos["positionAmt"])
+            side = "LONG" if amt > 0 else "SHORT"
+            entry_price = float(pos.get("entryPrice", 0))
+            leverage = int(pos.get("leverage", 1))
+            unrealized = float(pos.get("unrealizedProfit", 0))
+            notional = abs(float(pos.get("notional", 0)))
+
+            self.db.execute(
+                """INSERT INTO trades (symbol, side, entry_price, quantity, leverage, strategy, entry_time, fees, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (symbol, side, entry_price, abs(amt), leverage, "reconciled",
+                 datetime.now(timezone.utc).isoformat(), 0, "OPEN")
+            )
+            logger.info(f"  Reconciled: {side} {symbol} qty={abs(amt)} @ {entry_price} {leverage}x | PnL={unrealized:+.2f}")
+
+        # Cancel all open orders to start clean
+        try:
+            for symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+                ccxt_sym = symbol[:-4] + "/USDT"
+                try:
+                    await self.exchange.cancel_all_orders(ccxt_sym)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"Failed to cancel stale orders: {e}")
+
+        logger.info(f"Reconciliation complete: {len(positions)} positions synced")
+
     async def fetch_market_data(self) -> bool:
         """Fetch latest klines from Binance for all symbols/timeframes."""
         m = self.modules
@@ -777,6 +819,9 @@ async def main(args):
     if not success:
         logger.error("Failed to initialize. Exiting.")
         return
+
+    # Reconcile with exchange on startup
+    await bot.reconcile_with_exchange()
 
     # Start scheduler in background
     scheduler_task = asyncio.create_task(bot.run_scheduler(shutdown))
