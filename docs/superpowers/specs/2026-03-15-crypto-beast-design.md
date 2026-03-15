@@ -22,7 +22,7 @@ An autonomous, self-evolving cryptocurrency trading system for Binance Futures. 
 
 ## Architecture
 
-7-layer architecture with 20 modules in a single Python process.
+7-layer architecture with 21 modules in a single Python process.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -57,7 +57,8 @@ An autonomous, self-evolving cryptocurrency trading system for Binance Futures. 
 │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛             │
 │                          │                                        │
 │  ┏━━━━━━━━━━━━ Layer 6: Growth & Evolution ━━━━━━━┓             │
-│  ┃ CompoundEngine | Evolver | BacktestLab          ┃             │
+│  ┃ CompoundEngine | Evolver | BacktestLab           ┃             │
+│  ┃ TradeReviewer                                    ┃             │
 │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛             │
 │                          │                                        │
 │  ┏━━━━━━━━━━━━ Layer 7: Monitoring ━━━━━━━━━━━━━━━┓             │
@@ -91,12 +92,16 @@ Main Loop (every 5 seconds):
   -> Monitor.update()
   -> Notifier.send_if_needed()
 
-Evolution Loop (daily at 00:00 UTC):
-  BacktestLab.run_walk_forward()
-  -> Evolver.optimize_parameters()
-  -> Evolver.reweight_strategies()
-  -> AltcoinRadar.rescan_universe()
-  -> Monitor.log_evolution_report()
+Review & Evolution Loop (daily):
+  00:05 UTC → TradeReviewer.run_daily_review()
+  00:10 UTC → Evolver.run_daily_evolution(review=recommendations)
+       -> BacktestLab.run_walk_forward()
+       -> Evolver.optimize_parameters()
+       -> Evolver.reweight_strategies()
+       -> AltcoinRadar.rescan_universe()
+       -> Monitor.log_evolution_report()
+  Sunday 00:30 UTC → TradeReviewer.run_weekly_review()
+  1st of month 01:00 UTC → TradeReviewer.run_monthly_review()
 
 Emergency Check (every tick):
   EmergencyShield.check()
@@ -803,6 +808,114 @@ class BacktestLab:
         """Monte Carlo simulation on trade sequence"""
 ```
 
+#### TradeReviewer (trade_reviewer.py)
+
+**Purpose:** Post-trade analysis engine that diagnoses WHY trades won or lost, identifies recurring patterns, and provides actionable recommendations to the Evolver.
+
+**Unlike Evolver (which blindly optimizes parameters), TradeReviewer reasons about causality** — it answers "what went wrong and why" rather than just "which numbers perform better."
+
+**Daily Review (runs at 00:05 UTC, after data settles, before Evolver at 00:10):**
+
+For each closed trade in the past 24 hours:
+1. **Context reconstruction:** What was the market regime, session, confluence score, sentiment, and whale activity at entry time?
+2. **Loss classification** (for losing trades):
+   - `STOP_TOO_TIGHT`: Price hit stop then reversed in the right direction → recommendation: widen ATR multiplier
+   - `AGAINST_TREND`: Traded against the dominant regime → recommendation: increase MarketRegime weight in signal scoring
+   - `FAKE_SIGNAL`: Pattern/breakout failed (AntiTrap should have caught it) → recommendation: tighten AntiTrap thresholds
+   - `BAD_TIMING`: Right direction but entered too early/late → recommendation: adjust entry trigger sensitivity
+   - `SESSION_MISMATCH`: Strategy historically bad in this session → recommendation: adjust SessionTrader weights
+   - `FEE_EROSION`: Trade was profitable before fees, negative after → recommendation: raise minimum confidence threshold
+   - `CORRELATION_LOSS`: Multiple positions moved against simultaneously → recommendation: reduce max correlated exposure
+   - `EVENT_IMPACT`: Macro/crypto event caused adverse move → recommendation: widen pre-event risk reduction window
+3. **Win analysis** (for winning trades):
+   - What conditions were present? Build a "winning trade profile"
+   - Was the full profit captured? Or did early exit leave money on the table?
+   - Which signals were most predictive? (whale, sentiment, pattern, etc.)
+
+**Weekly Review (runs Sunday 00:30 UTC):**
+- **Streak analysis:** Identify clusters of consecutive losses — do they share common features?
+- **Hypothetical filtering:** "If we had required confluence >= 8 instead of 6, what would P&L be?"
+- **Strategy attribution:** Per-strategy breakdown by regime, session, and coin
+- **"Trades we should NOT have taken":** Count signals that scored below current threshold but were still executed (edge case bugs)
+- **Risk/reward calibration:** Are actual R:R ratios matching the planned ratios from SmartOrder?
+
+**Monthly Review (1st of month, 01:00 UTC):**
+- **Full performance report:** equity curve, drawdown analysis, Sharpe/Sortino, fee impact
+- **Strategy lifecycle:** Is any strategy consistently degrading? Should it be retired?
+- **Market regime accuracy:** How often did MarketRegimeDetector correctly identify the regime?
+- **Module scorecard:** Rate each intelligence module (whale, sentiment, etc.) by signal accuracy
+- **Recommendations digest:** Top 5 actionable changes, ranked by expected impact
+
+**Output:**
+
+```python
+@dataclass
+class LossClassification:
+    trade_id: int
+    category: str           # STOP_TOO_TIGHT, AGAINST_TREND, etc.
+    confidence: float       # How sure we are about this classification
+    evidence: str           # Human-readable explanation
+    recommendation: str     # Specific parameter adjustment suggestion
+
+@dataclass
+class WinProfile:
+    regime: MarketRegime
+    session: str
+    confluence_score: int
+    key_signals: list[str]  # Which data sources contributed
+    capture_efficiency: float  # % of available move captured
+
+@dataclass
+class ReviewReport:
+    period: str             # "daily", "weekly", "monthly"
+    timestamp: datetime
+    total_trades: int
+    wins: int
+    losses: int
+    loss_classifications: list[LossClassification]
+    win_profiles: list[WinProfile]
+    recommendations: list[str]
+    hypothetical_results: dict  # {"confluence_8": pnl, "no_scalper": pnl, ...}
+```
+
+**Interface:**
+
+```python
+class TradeReviewer:
+    async def run_daily_review(self) -> ReviewReport:
+        """Analyze today's trades, classify losses, profile wins"""
+    async def run_weekly_review(self) -> ReviewReport:
+        """Deeper pattern analysis across the week"""
+    async def run_monthly_review(self) -> ReviewReport:
+        """Full performance review with strategy lifecycle assessment"""
+    def get_recommendations(self) -> list[str]:
+        """Current actionable recommendations for Evolver"""
+    def get_loss_distribution(self, days: int = 30) -> dict[str, int]:
+        """Count of each loss category over N days"""
+```
+
+**Integration with Evolver:**
+
+The Evolver consumes TradeReviewer's recommendations as directional guidance:
+```
+Daily flow:
+  00:05 UTC → TradeReviewer.run_daily_review()
+       ↓ recommendations
+  00:10 UTC → Evolver.run_daily_evolution(review=reviewer.get_recommendations())
+```
+
+Instead of blindly searching the parameter space, Evolver prioritizes adjustments that address the most frequent loss categories. For example, if 60% of losses are classified as `STOP_TOO_TIGHT`, Evolver focuses its optimization budget on stop loss parameters first.
+
+**Dashboard Integration:**
+
+Monitor gets a new page:
+
+**Page 5 - Review:**
+- Loss category pie chart (what's killing us?)
+- Win profile heatmap (when/where do we win?)
+- Recommendation history (what changed and did it help?)
+- Weekly/monthly report summaries
+
 ---
 
 ### Layer 7: Monitoring
@@ -942,6 +1055,36 @@ CREATE TABLE whale_events (
     direction TEXT
 );
 
+-- Trade review / post-mortem
+CREATE TABLE trade_reviews (
+    id INTEGER PRIMARY KEY,
+    trade_id INTEGER NOT NULL REFERENCES trades(id),
+    review_date DATE NOT NULL,
+    outcome TEXT NOT NULL,           -- WIN or LOSS
+    loss_category TEXT,              -- STOP_TOO_TIGHT, AGAINST_TREND, etc.
+    classification_confidence REAL,
+    evidence TEXT,
+    recommendation TEXT,
+    regime_at_entry TEXT,
+    session_at_entry TEXT,
+    confluence_at_entry INTEGER,
+    capture_efficiency REAL          -- For wins: % of move captured
+);
+
+-- Review reports
+CREATE TABLE review_reports (
+    id INTEGER PRIMARY KEY,
+    period TEXT NOT NULL,            -- daily, weekly, monthly
+    timestamp TIMESTAMP NOT NULL,
+    total_trades INTEGER,
+    wins INTEGER,
+    losses INTEGER,
+    loss_distribution JSON,         -- {"STOP_TOO_TIGHT": 3, "AGAINST_TREND": 2, ...}
+    recommendations JSON,           -- ["widen stops", "reduce scalper weight", ...]
+    hypothetical_results JSON,      -- {"confluence_8": 150, "no_scalper": 120}
+    report_text TEXT                 -- Full human-readable report
+);
+
 -- System health log
 CREATE TABLE system_health (
     id INTEGER PRIMARY KEY,
@@ -1017,7 +1160,8 @@ crypto-beast/
 │   ├── __init__.py
 │   ├── compound_engine.py       # CompoundEngine
 │   ├── evolver.py               # Evolver
-│   └── backtest_lab.py          # BacktestLab
+│   ├── backtest_lab.py          # BacktestLab
+│   └── trade_reviewer.py       # TradeReviewer (复盘引擎)
 │
 ├── monitoring/                  # Layer 7: Monitoring
 │   ├── __init__.py
@@ -1347,6 +1491,48 @@ class OrderBook:
     bids: list[list[float]]  # [[price, quantity], ...]
     asks: list[list[float]]
     timestamp: datetime
+
+# === System Types ===
+
+# === Trade Review Types ===
+
+class LossCategory(Enum):
+    STOP_TOO_TIGHT = "STOP_TOO_TIGHT"
+    AGAINST_TREND = "AGAINST_TREND"
+    FAKE_SIGNAL = "FAKE_SIGNAL"
+    BAD_TIMING = "BAD_TIMING"
+    SESSION_MISMATCH = "SESSION_MISMATCH"
+    FEE_EROSION = "FEE_EROSION"
+    CORRELATION_LOSS = "CORRELATION_LOSS"
+    EVENT_IMPACT = "EVENT_IMPACT"
+
+@dataclass
+class LossClassification:
+    trade_id: int
+    category: LossCategory
+    confidence: float
+    evidence: str
+    recommendation: str
+
+@dataclass
+class WinProfile:
+    regime: MarketRegime
+    session: str
+    confluence_score: int
+    key_signals: list[str]
+    capture_efficiency: float
+
+@dataclass
+class ReviewReport:
+    period: str
+    timestamp: datetime
+    total_trades: int
+    wins: int
+    losses: int
+    loss_classifications: list[LossClassification]
+    win_profiles: list[WinProfile]
+    recommendations: list[str]
+    hypothetical_results: dict
 
 # === System Types ===
 
