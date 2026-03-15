@@ -88,8 +88,10 @@ class TradingBot:
 
             # Core
             self.config = Config()
-            # Use /tmp for DB to avoid external drive I/O issues
-            db_path = "/tmp/crypto_beast.db"
+            # DB stored in runtime dir (local disk, persistent)
+            import os
+            runtime_dir = os.path.dirname(os.path.abspath(__file__))
+            db_path = os.path.join(runtime_dir, "crypto_beast.db")
             self.db = Database(db_path)
             self.db.initialize()
             rate_limiter = BinanceRateLimiter()

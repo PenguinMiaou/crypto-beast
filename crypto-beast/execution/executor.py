@@ -72,9 +72,10 @@ class LiveExecutor:
                     await self.rate_limiter.acquire_order_slot()
 
                     side = "buy" if signal.direction == Direction.LONG else "sell"
+                    position_side = "LONG" if signal.direction == Direction.LONG else "SHORT"
                     order_type = tranche.get("type", "MARKET").lower()
 
-                    params: Dict = {}
+                    params: Dict = {"positionSide": position_side}
                     if order_type == "limit":
                         order = await self.exchange.create_limit_order(
                             ccxt_symbol,
@@ -198,8 +199,10 @@ class LiveExecutor:
             await self.rate_limiter.acquire_order_slot()
             ccxt_sym = self._to_ccxt_symbol(position.symbol)
             side = "sell" if position.direction == Direction.LONG else "buy"
+            position_side = "LONG" if position.direction == Direction.LONG else "SHORT"
             order = await self.exchange.create_market_order(
-                ccxt_sym, side, position.quantity
+                ccxt_sym, side, position.quantity,
+                {"positionSide": position_side},
             )
 
             fill_price = order.get("average", order.get("price", 0))
@@ -230,6 +233,7 @@ class LiveExecutor:
         """Place take-profit and stop-loss orders on exchange after entry fill."""
         exit_ids: List[str] = []
         close_side = "sell" if signal.direction == Direction.LONG else "buy"
+        position_side = "LONG" if signal.direction == Direction.LONG else "SHORT"
 
         # Place TP limit orders from SmartOrder exit_tranches
         for tranche in plan.exit_tranches:
@@ -240,7 +244,7 @@ class LiveExecutor:
                     continue
                 order = await self.exchange.create_limit_order(
                     ccxt_symbol, close_side, qty, tranche["price"],
-                    {"reduceOnly": True},
+                    {"positionSide": position_side, "reduceOnly": True},
                 )
                 exit_ids.append(order.get("id", ""))
                 logger.info(
@@ -256,7 +260,7 @@ class LiveExecutor:
                 order = await self.exchange.create_order(
                     ccxt_symbol, "STOP_MARKET", close_side, filled_qty,
                     None,  # no price for stop-market
-                    {"stopPrice": signal.stop_loss, "reduceOnly": True},
+                    {"stopPrice": signal.stop_loss, "positionSide": position_side, "reduceOnly": True},
                 )
                 exit_ids.append(order.get("id", ""))
                 logger.info(

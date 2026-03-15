@@ -1,22 +1,24 @@
 #!/bin/bash
 # Crypto Beast v1.0 — Start Script
-# Copies code to local disk and runs from there to avoid external drive I/O issues
+# Syncs code to local disk and runs from there to avoid external drive I/O issues
+# Runtime dir: ~/briantiong/crypto-beast-runtime/ (persistent across reboots)
 
 set -e
 
 SRC="/Volumes/ORICO Media/Crypto Trading System/crypto-beast"
-DST="/tmp/crypto-beast"
+DST="$HOME/briantiong/crypto-beast-runtime"
 VENV="$SRC/.venv"
 
 echo "=== Crypto Beast v1.0 ==="
 
 # Sync code to local disk
 echo "Syncing code to local disk..."
+mkdir -p "$DST"
 rsync -a --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \
     --exclude='crypto_beast.db*' --exclude='logs/*.log' \
     "$SRC/" "$DST/"
 
-# Link venv (stays on external drive, that's fine)
+# Link venv (stays on external drive)
 rm -f "$DST/.venv"
 ln -s "$VENV" "$DST/.venv"
 
