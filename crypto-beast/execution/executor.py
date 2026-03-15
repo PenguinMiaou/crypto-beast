@@ -31,9 +31,19 @@ class LiveExecutor:
         self.db = db
         self.rate_limiter = rate_limiter
 
+    @staticmethod
+    def _to_ccxt_symbol(symbol: str) -> str:
+        """Convert 'BTCUSDT' to 'BTC/USDT' for ccxt."""
+        if "/" in symbol:
+            return symbol
+        if symbol.endswith("USDT"):
+            return symbol[:-4] + "/USDT"
+        return symbol
+
     async def execute(self, plan: ExecutionPlan) -> ExecutionResult:
         """Execute a trade plan on Binance."""
         signal = plan.order.signal
+        ccxt_symbol = self._to_ccxt_symbol(signal.symbol)
         order_ids: List[str] = []
         total_filled = 0.0
         total_cost = 0.0
@@ -42,7 +52,7 @@ class LiveExecutor:
         # Set leverage
         try:
             await self.rate_limiter.acquire_order_slot()
-            await self.exchange.set_leverage(plan.order.leverage, signal.symbol)
+            await self.exchange.set_leverage(plan.order.leverage, ccxt_symbol)
         except Exception as e:
             logger.error(f"Failed to set leverage: {e}")
             return ExecutionResult(
@@ -67,7 +77,7 @@ class LiveExecutor:
                     params: Dict = {}
                     if order_type == "limit":
                         order = await self.exchange.create_limit_order(
-                            signal.symbol,
+                            ccxt_symbol,
                             side,
                             tranche["quantity"],
                             tranche["price"],
@@ -75,7 +85,7 @@ class LiveExecutor:
                         )
                     else:
                         order = await self.exchange.create_market_order(
-                            signal.symbol, side, tranche["quantity"], params
+                            ccxt_symbol, side, tranche["quantity"], params
                         )
 
                     fill_price = order.get(
@@ -145,7 +155,7 @@ class LiveExecutor:
         """Fetch open positions from exchange."""
         try:
             await self.rate_limiter.acquire_data_slot()
-            positions = await self.exchange.fetch_positions()
+            positions = await self.exchange.fetch_positions()  # Returns all futures positions
             result: List[Position] = []
             for pos in positions:
                 if float(pos.get("contracts", 0)) > 0:
@@ -179,9 +189,10 @@ class LiveExecutor:
         """Close a position."""
         try:
             await self.rate_limiter.acquire_order_slot()
+            ccxt_sym = self._to_ccxt_symbol(position.symbol)
             side = "sell" if position.direction == Direction.LONG else "buy"
             order = await self.exchange.create_market_order(
-                position.symbol, side, position.quantity
+                ccxt_sym, side, position.quantity
             )
 
             fill_price = order.get("average", order.get("price", 0))

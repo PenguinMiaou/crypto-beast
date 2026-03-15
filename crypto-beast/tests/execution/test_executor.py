@@ -173,7 +173,7 @@ class TestExecute:
         executor = LiveExecutor(exchange, db, rate_limiter)
         await executor.execute(plan)
 
-        assert exchange.leverage_calls == [(5, "BTCUSDT")]
+        assert exchange.leverage_calls == [(5, "BTC/USDT")]
 
     @pytest.mark.asyncio
     async def test_execute_leverage_failure(

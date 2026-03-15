@@ -153,7 +153,7 @@ class TradingBot:
             emergency_shield = EmergencyShield(self.config)
             recovery_mode = RecoveryMode(self.config)
 
-            # Execution - paper mode uses real prices
+            # Execution
             def get_price(symbol):
                 try:
                     t = exchange_sync.fetch_ticker(symbol.replace("USDT", "/USDT"))
@@ -161,7 +161,15 @@ class TradingBot:
                 except Exception:
                     return btc_price
 
-            executor = PaperExecutor(db=self.db, current_price_fn=get_price)
+            if self.paper_mode:
+                executor = PaperExecutor(db=self.db, current_price_fn=get_price)
+            else:
+                from execution.executor import LiveExecutor
+                executor = LiveExecutor(
+                    exchange=self.exchange,
+                    db=self.db,
+                    rate_limiter=rate_limiter,
+                )
 
             # Evolution
             compound_engine = CompoundEngine(self.config, self.db)
