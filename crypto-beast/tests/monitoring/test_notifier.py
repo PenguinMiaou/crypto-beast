@@ -44,10 +44,10 @@ class TestNotifierSend:
 
     @patch.object(Notifier, "_send_telegram")
     @patch.object(Notifier, "_send_macos")
-    def test_send_info_does_not_trigger_telegram(self, mock_macos, mock_tg):
+    def test_send_info_triggers_telegram(self, mock_macos, mock_tg):
         n = Notifier(telegram_token="tok", telegram_chat_id="123")
         n.send("Info", "msg", level="info")
-        mock_tg.assert_not_called()
+        mock_tg.assert_called_once()
 
 
 class TestNotifierFormat:

@@ -26,8 +26,8 @@ class Notifier:
         # macOS notification
         self._send_macos(title, message)
 
-        # Telegram (only if configured and level is warning/critical)
-        if self.telegram_token and self.telegram_chat_id and level in ("warning", "critical"):
+        # Telegram (send on all levels if configured)
+        if self.telegram_token and self.telegram_chat_id:
             return self._send_telegram(title, message)
 
         return True

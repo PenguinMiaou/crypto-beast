@@ -141,8 +141,5 @@ with tab4:
 
 db.close()
 
-# Auto-refresh every 10 seconds
-st.markdown(
-    '<meta http-equiv="refresh" content="10">',
-    unsafe_allow_html=True,
-)
+# Manual refresh button in sidebar
+st.sidebar.button("Refresh Data")

@@ -138,6 +138,29 @@ class TestRunBacktest:
         assert result.trades == []
 
 
+class TestRunWalkForward:
+    """Tests for BacktestLab.run_walk_forward."""
+
+    def test_walk_forward(self, lab, uptrend_data):
+        """Walk-forward returns valid result with expected attributes."""
+        strategy = TrendFollower()
+        # Use small windows (1 day each = 288 candles, need 576 total but data is 300)
+        # So this should return is_valid=False due to insufficient data
+        result = lab.run_walk_forward(strategy, uptrend_data, train_days=1, test_days=1)
+        assert hasattr(result, 'in_sample_sharpe')
+        assert hasattr(result, 'out_of_sample_sharpe')
+        assert isinstance(result.is_valid, bool)
+
+    def test_walk_forward_insufficient_data(self, lab, short_data):
+        """Insufficient data returns invalid result."""
+        from core.models import WalkForwardResult
+        strategy = TrendFollower()
+        result = lab.run_walk_forward(strategy, short_data, train_days=30, test_days=7)
+        assert isinstance(result, WalkForwardResult)
+        assert result.is_valid is False
+        assert result.in_sample_sharpe == 0.0
+
+
 class TestRunMonteCarlo:
     """Tests for BacktestLab.run_monte_carlo."""
 

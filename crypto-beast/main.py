@@ -71,9 +71,13 @@ class TradingBot:
         from execution.paper_executor import PaperExecutor
         from execution.emergency_shield import EmergencyShield
         from execution.recovery_mode import RecoveryMode
+        from execution.smart_order import SmartOrder
         from evolution.compound_engine import CompoundEngine
         from evolution.evolver import Evolver
         from evolution.trade_reviewer import TradeReviewer
+        from data.whale_tracker import WhaleTracker
+        from data.sentiment_radar import SentimentRadar
+        from data.liquidation_hunter import LiquidationHunter
         from monitoring.notifier import Notifier
         from monitoring.monitor import MonitorData
 
@@ -118,8 +122,10 @@ class TradingBot:
             self._peak_equity = wallet
 
             # DataFeed
+            # Default symbols: BTC + top altcoins
+            initial_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
             data_feed = DataFeed(
-                symbols=["BTCUSDT"],
+                symbols=initial_symbols,
                 intervals=["5m", "15m", "1h", "4h"],
                 rate_limiter=rate_limiter,
                 exchange=self.exchange,
@@ -132,6 +138,10 @@ class TradingBot:
             event_engine = EventEngine()
             altcoin_radar = AltcoinRadar()
             pattern_scanner = PatternScanner()
+            whale_tracker = WhaleTracker()
+            sentiment_radar = SentimentRadar()
+            liquidation_hunter = LiquidationHunter()
+            smart_order = SmartOrder()
 
             # Strategy - weights act as multipliers on confidence
             # Higher weights = strategies contribute more to final confidence
@@ -200,6 +210,10 @@ class TradingBot:
                 "event_engine": event_engine,
                 "altcoin_radar": altcoin_radar,
                 "pattern_scanner": pattern_scanner,
+                "whale_tracker": whale_tracker,
+                "sentiment_radar": sentiment_radar,
+                "liquidation_hunter": liquidation_hunter,
+                "smart_order": smart_order,
                 "strategy_engine": strategy_engine,
                 "funding_rate_arb": funding_rate_arb,
                 "risk_manager": risk_manager,
@@ -267,6 +281,34 @@ class TradingBot:
 
         if not data_ok:
             logger.warning("Data fetch incomplete, continuing with available data")
+
+        # Feed intelligence modules with latest data
+        data_feed = m["data_feed"]
+        for symbol in data_feed.symbols:
+            klines_5m = data_feed.get_klines(symbol, "5m")
+            if len(klines_5m) == 0:
+                continue
+
+            last_bar = klines_5m.iloc[-1]
+            current_price = float(last_bar["close"])
+
+            # Feed WhaleTracker with recent large-volume bars
+            volume_avg = klines_5m["volume"].tail(20).mean()
+            if last_bar["volume"] > volume_avg * 3:
+                m["whale_tracker"].process_trade({
+                    "price": current_price,
+                    "quantity": last_bar["volume"],
+                    "is_buyer_maker": last_bar["close"] < last_bar["open"],
+                    "timestamp": datetime.now(timezone.utc),
+                })
+
+            # Feed OrderBookSniper (use spread as proxy since we don't have real orderbook)
+            # This will be enhanced when WebSocket is added
+
+            # Get directional biases from intelligence modules
+            whale_signal = m["whale_tracker"].get_signal(symbol)
+            sentiment_signal = m["sentiment_radar"].get_signal(symbol)
+            liquidation_signal = m["liquidation_hunter"].get_signal(symbol)
 
         # 2. Check system health
         if not m["system_guard"].should_trade():
@@ -384,16 +426,8 @@ class TradingBot:
                     logger.debug("Fee budget exceeded, skipping")
                     continue
 
-                # Create execution plan (simple single-tranche for paper)
-                plan = ExecutionPlan(
-                    order=order,
-                    entry_tranches=[{
-                        "price": signal.entry_price,
-                        "quantity": order.quantity,
-                        "type": "MARKET",
-                    }],
-                    exit_tranches=[],
-                )
+                # Create execution plan via SmartOrder
+                plan = m["smart_order"].plan_execution(order, urgency=signal.confidence)
 
                 # Execute
                 result = await m["executor"].execute(plan)
@@ -455,6 +489,7 @@ class TradingBot:
 
     async def run_scheduler(self, shutdown: GracefulShutdown) -> None:
         """Background scheduler for periodic tasks."""
+        m = self.modules
         while not shutdown.shutting_down:
             now = datetime.now(timezone.utc)
 
@@ -477,7 +512,27 @@ class TradingBot:
             if now.hour == 0 and now.minute == 10:
                 logger.info("Running daily evolution")
                 try:
-                    m["evolver"].apply_if_pending()
+                    # Gather data for evolution
+                    data_feed = m["data_feed"]
+                    evolution_data = {}
+                    for symbol in data_feed.symbols:
+                        klines = data_feed.get_klines(symbol, "5m")
+                        if len(klines) >= 200:
+                            evolution_data[symbol] = klines
+
+                    if evolution_data:
+                        report = await m["evolver"].run_daily_evolution(
+                            data=evolution_data,
+                            recommendations=m["trade_reviewer"].get_recommendations([])
+                        )
+                        if report:
+                            # Update strategy weights
+                            m["strategy_engine"].update_weights(report.strategy_weights)
+                            m["notifier"].send(
+                                "Evolution Complete",
+                                f"Sharpe: {report.backtest_sharpe_before:.3f} -> {report.backtest_sharpe_after:.3f}",
+                                level="info"
+                            )
                 except Exception as e:
                     logger.error(f"Daily evolution failed: {e}")
 
