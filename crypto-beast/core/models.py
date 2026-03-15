@@ -220,6 +220,46 @@ class ReviewReport:
     recommendations: list[str]
     hypothetical_results: dict
 
+# === Backtest Types ===
+
+@dataclass
+class BacktestResult:
+    total_return: float
+    sharpe_ratio: float
+    sortino_ratio: float
+    max_drawdown: float
+    win_rate: float
+    avg_win: float
+    avg_loss: float
+    profit_factor: float
+    total_trades: int
+    trades: list  # [{entry, exit, pnl, fees, ...}]
+
+@dataclass
+class WalkForwardResult:
+    in_sample_sharpe: float
+    out_of_sample_sharpe: float
+    best_params: dict
+    is_valid: bool  # True if OOS sharpe > 0
+
+@dataclass
+class MonteCarloResult:
+    median_return: float
+    worst_case_drawdown: float  # 5th percentile
+    probability_of_ruin: float  # % of simulations that hit max_drawdown
+    confidence_95_return: float
+
+# === Evolution Types ===
+
+@dataclass
+class EvolutionReport:
+    timestamp: datetime
+    parameters_changed: dict  # {param: {old: x, new: y}}
+    backtest_sharpe_before: float
+    backtest_sharpe_after: float
+    strategy_weights: dict
+    recommendations_applied: list
+
 # === System Types ===
 
 @dataclass
