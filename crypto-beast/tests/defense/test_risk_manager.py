@@ -114,7 +114,9 @@ class TestRiskManager:
         # Below min_confidence (default 0.3) → rejected
         order = rm.validate(low_conf, empty_portfolio, min_confidence=0.5)
         assert order is None
-        # At min_confidence → accepted with reduced leverage
-        order2 = rm.validate(low_conf, empty_portfolio, min_confidence=0.3)
+        # At min_confidence → accepted with reduced leverage (use higher equity for BTC min notional)
+        big_portfolio = Portfolio(equity=500.0, available_balance=500.0, positions=[],
+            peak_equity=500.0, locked_capital=0.0, daily_pnl=0.0, total_fees_today=0.0, drawdown_pct=0.0)
+        order2 = rm.validate(low_conf, big_portfolio, min_confidence=0.3)
         assert order2 is not None
         assert order2.leverage == 2

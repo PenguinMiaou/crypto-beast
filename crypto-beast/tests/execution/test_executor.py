@@ -19,7 +19,7 @@ from execution.executor import LiveExecutor
 
 
 class MockExchange:
-    """Mock ccxt exchange for testing."""
+    """Mock ccxt exchange for testing (supports direct fapi calls for hedge mode)."""
 
     def __init__(self, fail_count: int = 0):
         self._fail_count = fail_count
@@ -31,34 +31,19 @@ class MockExchange:
     async def set_leverage(self, leverage: int, symbol: str) -> None:
         self.leverage_calls.append((leverage, symbol))
 
-    async def create_market_order(
-        self, symbol: str, side: str, amount: float, params: Optional[dict] = None
-    ) -> dict:
+    async def fapiPrivatePostOrder(self, params: dict) -> dict:
+        """Direct Binance fapi order (hedge mode compatible)."""
         self._attempt += 1
         if self._attempt <= self._fail_count:
             raise Exception(f"Mock failure {self._attempt}")
-        self.order_calls.append(("market", symbol, side, amount))
+        qty = float(params.get("quantity", 0))
+        self.order_calls.append((params.get("type", "MARKET"), params.get("symbol"),
+                                  params.get("side"), qty))
         return {
-            "id": "mock-123",
-            "average": 65000,
-            "filled": amount,
-            "fee": {"cost": amount * 65000 * 0.0004},
-        }
-
-    async def create_limit_order(
-        self,
-        symbol: str,
-        side: str,
-        amount: float,
-        price: float,
-        params: Optional[dict] = None,
-    ) -> dict:
-        self.order_calls.append(("limit", symbol, side, amount, price))
-        return {
-            "id": "mock-456",
-            "average": price,
-            "filled": amount,
-            "fee": {"cost": amount * price * 0.0002},
+            "orderId": f"mock-{self._attempt}",
+            "avgPrice": "65000",
+            "executedQty": str(qty),
+            "status": "FILLED",
         }
 
     async def fetch_positions(self) -> list:
@@ -72,13 +57,6 @@ class MockExchange:
                 "unrealizedPnl": 1.5,
             }
         ]
-
-    async def create_order(
-        self, symbol: str, order_type: str, side: str, amount: float,
-        price=None, params: Optional[dict] = None,
-    ) -> dict:
-        self.order_calls.append(("stop", symbol, side, amount))
-        return {"id": "mock-sl-789"}
 
     async def cancel_all_orders(self) -> None:
         self.cancel_called = True
@@ -154,7 +132,7 @@ class TestExecute:
 
         assert result.success is True
         assert len(result.order_ids) >= 1  # Entry + TP/SL exit orders
-        assert result.order_ids[0] == "mock-123"
+        assert "mock-" in result.order_ids[0]
         assert result.total_filled == 0.01
         assert result.avg_fill_price == 65000
         assert result.fees_paid > 0
@@ -259,7 +237,7 @@ class TestClosePosition:
         assert result.success is True
         assert result.total_filled == 0.01
         # Should sell to close long
-        assert exchange.order_calls[0][2] == "sell"
+        assert exchange.order_calls[0][2].upper() == "SELL"
 
     @pytest.mark.asyncio
     async def test_close_short_position(
@@ -282,7 +260,7 @@ class TestClosePosition:
         result = await executor.close_position(position)
         assert result.success is True
         # Should buy to close short
-        assert exchange.order_calls[0][2] == "buy"
+        assert exchange.order_calls[0][2].upper() == "BUY"
 
     @pytest.mark.asyncio
     async def test_close_position_error(
@@ -293,7 +271,7 @@ class TestClosePosition:
         async def fail_order(*args, **kwargs):
             raise Exception("order failed")
 
-        exchange.create_market_order = fail_order
+        exchange.fapiPrivatePostOrder = fail_order
         executor = LiveExecutor(exchange, db, rate_limiter)
         position = Position(
             symbol="BTCUSDT",

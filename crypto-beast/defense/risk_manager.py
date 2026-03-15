@@ -13,15 +13,32 @@ from core.models import (
     ValidatedOrder,
 )
 
+# Binance Futures minimum notional per symbol
+MIN_NOTIONAL = {
+    "BTCUSDT": 100,
+    "ETHUSDT": 20,
+    "SOLUSDT": 20,
+    "BNBUSDT": 20,
+    "XRPUSDT": 20,
+    "DOGEUSDT": 20,
+    "ADAUSDT": 20,
+    "AVAXUSDT": 20,
+    "LINKUSDT": 20,
+    "DOTUSDT": 20,
+    "MATICUSDT": 20,
+}
+DEFAULT_MIN_NOTIONAL = 20
+
 
 class RiskManager:
     def __init__(self, config: Config):
         self.config = config
 
-    def validate(self, signal: TradeSignal, portfolio: Portfolio, min_confidence: float = 0.3) -> Optional[ValidatedOrder]:
+    def validate(self, signal: TradeSignal, portfolio: Portfolio,
+                 min_confidence: float = 0.3) -> Optional[ValidatedOrder]:
         # Reject low confidence signals
         if signal.confidence < min_confidence:
-            logger.debug(f"Signal rejected: confidence {signal.confidence} < 0.5")
+            logger.debug(f"Signal rejected: confidence {signal.confidence} < {min_confidence}")
             return None
 
         # Check max concurrent positions
@@ -44,7 +61,7 @@ class RiskManager:
         for pos in portfolio.positions:
             if pos.symbol in correlated_pairs.get(signal.symbol, []):
                 if pos.direction == signal.direction:
-                    signal.confidence *= 0.8  # 20% penalty for correlated same-direction
+                    signal.confidence *= 0.8
                     logger.debug(f"Correlation penalty: {signal.symbol} same direction as {pos.symbol}")
 
         # Determine leverage based on confidence
@@ -55,8 +72,23 @@ class RiskManager:
         else:
             leverage = max(1, self.config.leverage_medium_confidence // 2)
 
+        # Calculate available capital per position
+        # Reserve capital equally among max positions
+        max_per_position = portfolio.equity / self.config.max_concurrent_positions
+        # Account for already-used margin
+        used_margin = sum(
+            pos.quantity * pos.entry_price / pos.leverage
+            for pos in portfolio.positions
+        )
+        available = portfolio.equity - used_margin
+        capital_for_this = min(max_per_position, available * 0.9)  # 10% buffer
+
+        if capital_for_this <= 0:
+            logger.debug("Signal rejected: no available capital")
+            return None
+
         # Calculate position size based on risk
-        risk_per_trade = portfolio.equity * self.config.max_risk_per_trade
+        risk_per_trade = capital_for_this * self.config.max_risk_per_trade
         entry = signal.entry_price
         stop = signal.stop_loss
         risk_distance = abs(entry - stop)
@@ -68,19 +100,27 @@ class RiskManager:
         # Position size in base currency
         quantity = risk_per_trade / risk_distance
 
-        # Notional value check (Binance minimum ~$5)
+        # Check notional (quantity * price) meets minimum
+        min_notional = MIN_NOTIONAL.get(signal.symbol, DEFAULT_MIN_NOTIONAL)
         notional = quantity * entry
-        if notional < 5.0:
-            # Increase to minimum
-            quantity = 5.0 / entry
+        if notional < min_notional:
+            # Increase to minimum notional
+            quantity = min_notional / entry
 
-        # Ensure we don't exceed available balance with leverage
-        required_margin = (quantity * entry) / leverage
-        if required_margin > portfolio.available_balance:
-            quantity = (portfolio.available_balance * leverage) / entry * 0.95  # 5% buffer
-            if quantity * entry < 5.0:
-                logger.debug("Signal rejected: insufficient balance for minimum order")
-                return None
+        # Cap notional to available margin * leverage
+        max_notional = capital_for_this * leverage
+        if quantity * entry > max_notional:
+            quantity = max_notional / entry
+
+        # Final notional check — if still below minimum after capping, reject
+        notional = quantity * entry
+        required_margin = notional / leverage
+        if notional < min_notional:
+            logger.debug(f"Signal rejected: notional ${notional:.2f} < min ${min_notional}")
+            return None
+        if required_margin > available:
+            logger.debug(f"Signal rejected: margin ${required_margin:.2f} > available ${available:.2f}")
+            return None
 
         risk_amount = quantity * risk_distance
 
@@ -94,5 +134,5 @@ class RiskManager:
         )
 
     def validate_fast(self, signal: TradeSignal, portfolio: Portfolio) -> Optional[ValidatedOrder]:
-        """Fast validation for altcoin lag strategy - skips some checks."""
+        """Fast validation for altcoin lag strategy."""
         return self.validate(signal, portfolio)
