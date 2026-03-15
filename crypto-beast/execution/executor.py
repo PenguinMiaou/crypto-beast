@@ -84,8 +84,7 @@ class LiveExecutor:
             params["timeInForce"] = "GTC"
         if stop_price:
             params["stopPrice"] = str(round(stop_price, 2))
-        if reduce_only:
-            params["reduceOnly"] = "true"
+        # Note: reduceOnly is not supported in hedge mode (positionSide handles it)
 
         await self.rate_limiter.acquire_order_slot()
         result = await self.exchange.fapiPrivatePostOrder(params)
