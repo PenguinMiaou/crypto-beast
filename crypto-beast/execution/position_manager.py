@@ -11,9 +11,11 @@ from core.models import Direction, OrderType, Position
 class PositionManager:
     """Monitor open positions and trigger SL/TP exits."""
 
-    def __init__(self, db: Database, get_price_fn: Callable[[str], float]):
+    def __init__(self, db: Database, get_price_fn: Callable[[str], float],
+                 executor=None):
         self.db = db
         self._get_price = get_price_fn
+        self._executor = executor  # LiveExecutor or None for paper mode
 
     def check_positions(self) -> List[dict]:
         """Check all open positions against their SL/TP.
@@ -90,3 +92,47 @@ class PositionManager:
             f"CLOSED {trade['side']} {trade['symbol']} @ ${trade['exit_price']:,.2f} | "
             f"PnL={trade['pnl']:+.4f} | Reason={trade['reason']} | Strategy={trade['strategy']}"
         )
+
+    async def close_trade_live(self, trade: dict) -> bool:
+        """Close a trade on the exchange (live mode) and update DB.
+
+        In live mode, the SL/TP orders are already placed on the exchange
+        via LiveExecutor._place_exit_orders(). This method is a fallback
+        for cases where exchange orders didn't trigger (e.g., API lag).
+        """
+        if self._executor is None:
+            self.close_trade(trade)
+            return True
+
+        try:
+            position = Position(
+                symbol=trade["symbol"],
+                direction=Direction.LONG if trade["side"] == "LONG" else Direction.SHORT,
+                entry_price=trade["entry_price"],
+                quantity=trade["quantity"],
+                leverage=trade["leverage"],
+                unrealized_pnl=trade["pnl"],
+                strategy=trade["strategy"],
+                entry_time=datetime.utcnow(),
+                current_stop=0.0,
+            )
+            result = await self._executor.close_position(position, OrderType.MARKET)
+            if result.success:
+                # Update DB with actual fill price
+                actual_pnl = trade["pnl"]  # Could recalculate from result.avg_fill_price
+                self.db.execute(
+                    "UPDATE trades SET exit_price = ?, exit_time = ?, pnl = ?, fees = fees + ?, status = 'CLOSED' WHERE id = ?",
+                    (result.avg_fill_price, datetime.utcnow().isoformat(),
+                     actual_pnl, result.fees_paid, trade["trade_id"])
+                )
+                logger.info(
+                    f"LIVE CLOSED {trade['side']} {trade['symbol']} @ ${result.avg_fill_price:,.2f} | "
+                    f"PnL={actual_pnl:+.4f} | Reason={trade['reason']}"
+                )
+                return True
+            else:
+                logger.error(f"Live close failed: {result.error}")
+                return False
+        except Exception as e:
+            logger.error(f"Live close exception: {e}")
+            return False

@@ -73,6 +73,13 @@ class MockExchange:
             }
         ]
 
+    async def create_order(
+        self, symbol: str, order_type: str, side: str, amount: float,
+        price=None, params: Optional[dict] = None,
+    ) -> dict:
+        self.order_calls.append(("stop", symbol, side, amount))
+        return {"id": "mock-sl-789"}
+
     async def cancel_all_orders(self) -> None:
         self.cancel_called = True
 
@@ -146,7 +153,7 @@ class TestExecute:
         result = await executor.execute(plan)
 
         assert result.success is True
-        assert len(result.order_ids) == 1
+        assert len(result.order_ids) >= 1  # Entry + TP/SL exit orders
         assert result.order_ids[0] == "mock-123"
         assert result.total_filled == 0.01
         assert result.avg_fill_price == 65000
@@ -344,7 +351,7 @@ class TestRetryLogic:
         result = await executor.execute(plan)
 
         assert result.success is True
-        assert len(result.order_ids) == 1
+        assert len(result.order_ids) >= 1  # Entry + TP/SL exit orders
 
     @pytest.mark.asyncio
     async def test_retry_exhausted(

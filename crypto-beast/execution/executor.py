@@ -124,6 +124,11 @@ class LiveExecutor:
             else 0
         )
 
+        # Place exit orders (TP + SL) on exchange
+        exit_order_ids = await self._place_exit_orders(
+            ccxt_symbol, signal, plan, total_filled)
+        order_ids.extend(exit_order_ids)
+
         # Record to DB
         self.db.execute(
             """INSERT INTO trades (symbol, side, entry_price, quantity, leverage,
@@ -218,6 +223,49 @@ class LiveExecutor:
                 slippage=0,
                 error=str(e),
             )
+
+    async def _place_exit_orders(
+        self, ccxt_symbol: str, signal, plan: "ExecutionPlan", filled_qty: float
+    ) -> List[str]:
+        """Place take-profit and stop-loss orders on exchange after entry fill."""
+        exit_ids: List[str] = []
+        close_side = "sell" if signal.direction == Direction.LONG else "buy"
+
+        # Place TP limit orders from SmartOrder exit_tranches
+        for tranche in plan.exit_tranches:
+            try:
+                await self.rate_limiter.acquire_order_slot()
+                qty = min(tranche["quantity"], filled_qty)
+                if qty <= 0:
+                    continue
+                order = await self.exchange.create_limit_order(
+                    ccxt_symbol, close_side, qty, tranche["price"],
+                    {"reduceOnly": True},
+                )
+                exit_ids.append(order.get("id", ""))
+                logger.info(
+                    f"TP order placed: {close_side} {ccxt_symbol} {qty} @ {tranche['price']}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to place TP order: {e}")
+
+        # Place SL stop-market order
+        if signal.stop_loss:
+            try:
+                await self.rate_limiter.acquire_order_slot()
+                order = await self.exchange.create_order(
+                    ccxt_symbol, "STOP_MARKET", close_side, filled_qty,
+                    None,  # no price for stop-market
+                    {"stopPrice": signal.stop_loss, "reduceOnly": True},
+                )
+                exit_ids.append(order.get("id", ""))
+                logger.info(
+                    f"SL order placed: {close_side} {ccxt_symbol} {filled_qty} @ stop={signal.stop_loss}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to place SL order: {e}")
+
+        return exit_ids
 
     async def cancel_all_pending(self) -> None:
         """Cancel all open orders."""

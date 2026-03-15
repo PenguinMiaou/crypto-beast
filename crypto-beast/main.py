@@ -189,7 +189,10 @@ class TradingBot:
 
             # Position management (SL/TP)
             from execution.position_manager import PositionManager
-            position_manager = PositionManager(db=self.db, get_price_fn=get_price)
+            position_manager = PositionManager(
+                db=self.db, get_price_fn=get_price,
+                executor=executor if not self.paper_mode else None,
+            )
 
             # Evolution
             compound_engine = CompoundEngine(self.config, self.db)
@@ -498,7 +501,10 @@ class TradingBot:
         # 11. Check existing positions for SL/TP
         to_close = m["position_manager"].check_positions()
         for trade in to_close:
-            m["position_manager"].close_trade(trade)
+            if self.paper_mode:
+                m["position_manager"].close_trade(trade)
+            else:
+                await m["position_manager"].close_trade_live(trade)
             self._daily_pnl += trade["pnl"]
             self._daily_fees += trade["fees"]
             m["notifier"].send(
