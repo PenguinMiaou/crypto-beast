@@ -88,7 +88,9 @@ class TradingBot:
 
             # Core
             self.config = Config()
-            self.db = Database("crypto_beast.db")
+            # Use /tmp for DB to avoid external drive I/O issues
+            db_path = "/tmp/crypto_beast.db"
+            self.db = Database(db_path)
             self.db.initialize()
             rate_limiter = BinanceRateLimiter()
 
@@ -415,6 +417,7 @@ class TradingBot:
                 m["multi_timeframe"].update(symbol, klines_by_tf)
 
         # 10. Generate and execute signals
+        opened_this_cycle = set()
         for symbol in data_feed.symbols:
             klines_5m = data_feed.get_klines(symbol, "5m")
             if len(klines_5m) < 50:
@@ -444,6 +447,14 @@ class TradingBot:
                     signals.append(pattern_signal)
 
             if not signals:
+                continue
+
+            # Deduplicate: keep only highest confidence per symbol
+            best_signal = max(signals, key=lambda s: s.confidence)
+            signals = [best_signal]
+
+            # Skip if we already opened a position for this symbol this cycle
+            if symbol in opened_this_cycle:
                 continue
 
             for signal in signals:
@@ -485,6 +496,7 @@ class TradingBot:
                 # Execute
                 result = await m["executor"].execute(plan)
                 if result.success:
+                    opened_this_cycle.add(symbol)
                     m["fee_optimizer"].record_fee(result.fees_paid)
                     self._daily_fees += result.fees_paid
                     m["notifier"].send(

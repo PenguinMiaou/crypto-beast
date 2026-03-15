@@ -9,15 +9,16 @@ from loguru import logger
 class Database:
     def __init__(self, db_path: str = "crypto_beast.db"):
         self.db_path = db_path
-        self._local = threading.local()
+        self._conn_instance = None
 
     @property
     def _conn(self) -> sqlite3.Connection:
-        if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = sqlite3.connect(self.db_path)
-            self._local.conn.execute("PRAGMA journal_mode=WAL")
-            self._local.conn.execute("PRAGMA busy_timeout=5000")
-        return self._local.conn
+        if self._conn_instance is None:
+            self._conn_instance = sqlite3.connect(
+                self.db_path, check_same_thread=False)
+            self._conn_instance.execute("PRAGMA journal_mode=WAL")
+            self._conn_instance.execute("PRAGMA busy_timeout=5000")
+        return self._conn_instance
 
     def initialize(self) -> None:
         schema = """
