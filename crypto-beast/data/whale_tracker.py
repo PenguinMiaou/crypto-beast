@@ -10,7 +10,8 @@ class WhaleTracker:
     UPDATE_INTERVAL = 60  # seconds
     LARGE_TRADE_THRESHOLD = 100000  # $100k notional
 
-    def __init__(self):
+    def __init__(self, large_trade_threshold: float = 100000):
+        self.LARGE_TRADE_THRESHOLD = large_trade_threshold
         self._large_trades: List[dict] = []  # [{side, notional, timestamp}]
         self._last_update = 0.0
 

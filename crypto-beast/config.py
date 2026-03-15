@@ -43,6 +43,20 @@ class Config:
     kelly_fraction: float = 0.5
     profit_lock_milestones: dict = field(default_factory=lambda: {150: 20, 200: 50, 500: 150})
 
+    # Intelligence thresholds
+    whale_trade_threshold: float = 100000.0  # $100k
+    fear_greed_bullish: int = 20  # Below = extreme fear (contrarian buy)
+    fear_greed_bearish: int = 80  # Above = extreme greed (contrarian sell)
+    cascade_multiplier: float = 2.0
+    orderbook_imbalance_bullish: float = 1.5
+    orderbook_imbalance_bearish: float = 0.67
+
+    # Funding rate
+    funding_rate_extreme: float = 0.001  # 0.1% per 8h
+
+    # Pattern detection
+    pattern_min_confidence: float = 0.5
+
     # MultiTimeframe
     mtf_min_confluence: int = 6
 

@@ -70,3 +70,39 @@ class DataFeed:
     def update_cache(self, symbol: str, interval: str, df: pd.DataFrame) -> None:
         """Manually update cache (used for testing and WebSocket updates)."""
         self._cache[symbol][interval] = df
+
+    def save_to_db(self, db) -> None:
+        """Persist cached klines to database for backtesting."""
+        for symbol, intervals in self._cache.items():
+            for interval, df in intervals.items():
+                if len(df) == 0:
+                    continue
+                for _, row in df.tail(50).iterrows():  # Save last 50 candles
+                    try:
+                        db.execute(
+                            """INSERT OR REPLACE INTO klines
+                               (symbol, interval, open_time, open, high, low, close, volume)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (symbol, interval, str(row["open_time"]),
+                             float(row["open"]), float(row["high"]),
+                             float(row["low"]), float(row["close"]), float(row["volume"]))
+                        )
+                    except Exception:
+                        pass
+
+    def load_from_db(self, db) -> None:
+        """Load cached klines from database on startup."""
+        for symbol in self.symbols:
+            for interval in self.intervals:
+                try:
+                    rows = db.execute(
+                        "SELECT open_time, open, high, low, close, volume FROM klines WHERE symbol=? AND interval=? ORDER BY open_time DESC LIMIT 500",
+                        (symbol, interval)
+                    ).fetchall()
+                    if rows:
+                        df = pd.DataFrame(rows, columns=["open_time", "open", "high", "low", "close", "volume"])
+                        df["open_time"] = pd.to_datetime(df["open_time"])
+                        df = df.sort_values("open_time").reset_index(drop=True)
+                        self._cache[symbol][interval] = df
+                except Exception:
+                    pass

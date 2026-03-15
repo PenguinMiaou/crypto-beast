@@ -42,6 +42,19 @@ if db is None:
     st.warning("Database not found. Start the bot first: `python main.py`")
     st.stop()
 
+# === Sidebar: Bot Status ===
+st.sidebar.title("Bot Status")
+try:
+    open_count = db.execute("SELECT COUNT(*) FROM trades WHERE status='OPEN'").fetchone()[0]
+    closed_count = db.execute("SELECT COUNT(*) FROM trades WHERE status='CLOSED'").fetchone()[0]
+    st.sidebar.metric("Open Trades", open_count)
+    st.sidebar.metric("Closed Trades", closed_count)
+    if closed_count > 0:
+        total_pnl = db.execute("SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status='CLOSED'").fetchone()[0]
+        st.sidebar.metric("Total P&L", f"${total_pnl:+.2f}")
+except Exception:
+    st.sidebar.write("No data yet")
+
 # === Tabs ===
 tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Trades", "Strategies", "System"])
 
@@ -133,6 +146,20 @@ with tab4:
         if evo:
             st.subheader("Recent Evolution")
             st.dataframe(pd.DataFrame(evo, columns=["Time", "Sharpe Before", "Sharpe After"]))
+    except Exception:
+        pass
+
+    # Recent trade activity
+    try:
+        recent = db.execute(
+            "SELECT symbol, side, entry_price, strategy, entry_time, status, pnl FROM trades ORDER BY entry_time DESC LIMIT 10"
+        ).fetchall()
+        if recent:
+            st.subheader("Recent Activity")
+            for r in recent:
+                pnl_str = f"PnL: {r[6]:+.2f}" if r[6] else "Open"
+                icon = "G" if r[1] == "LONG" else "R"
+                st.write(f"[{icon}] {r[1]} {r[0]} @ ${r[2]:,.2f} | {r[3]} | {r[5]} | {pnl_str}")
     except Exception:
         pass
 

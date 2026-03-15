@@ -35,6 +35,18 @@ class RiskManager:
                 logger.debug(f"Signal rejected: already have position in {signal.symbol}")
                 return None
 
+        # Correlation check: reduce confidence for correlated positions
+        correlated_pairs = {
+            "BTCUSDT": ["ETHUSDT", "SOLUSDT"],
+            "ETHUSDT": ["BTCUSDT", "SOLUSDT"],
+            "SOLUSDT": ["BTCUSDT", "ETHUSDT"],
+        }
+        for pos in portfolio.positions:
+            if pos.symbol in correlated_pairs.get(signal.symbol, []):
+                if pos.direction == signal.direction:
+                    signal.confidence *= 0.8  # 20% penalty for correlated same-direction
+                    logger.debug(f"Correlation penalty: {signal.symbol} same direction as {pos.symbol}")
+
         # Determine leverage based on confidence
         if signal.confidence >= 0.8:
             leverage = self.config.leverage_high_confidence

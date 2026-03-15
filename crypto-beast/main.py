@@ -78,6 +78,7 @@ class TradingBot:
         from data.whale_tracker import WhaleTracker
         from data.sentiment_radar import SentimentRadar
         from data.liquidation_hunter import LiquidationHunter
+        from data.orderbook_sniper import OrderBookSniper
         from monitoring.notifier import Notifier
         from monitoring.monitor import MonitorData
 
@@ -131,6 +132,9 @@ class TradingBot:
                 exchange=self.exchange,
             )
 
+            # Preload cached klines from DB
+            data_feed.load_from_db(self.db)
+
             # Analysis
             regime_detector = MarketRegimeDetector()
             multi_timeframe = MultiTimeframe()
@@ -141,6 +145,7 @@ class TradingBot:
             whale_tracker = WhaleTracker()
             sentiment_radar = SentimentRadar()
             liquidation_hunter = LiquidationHunter()
+            orderbook_sniper = OrderBookSniper()
             smart_order = SmartOrder()
 
             # Strategy - weights act as multipliers on confidence
@@ -213,6 +218,7 @@ class TradingBot:
                 "whale_tracker": whale_tracker,
                 "sentiment_radar": sentiment_radar,
                 "liquidation_hunter": liquidation_hunter,
+                "orderbook_sniper": orderbook_sniper,
                 "smart_order": smart_order,
                 "strategy_engine": strategy_engine,
                 "funding_rate_arb": funding_rate_arb,
@@ -302,8 +308,32 @@ class TradingBot:
                     "timestamp": datetime.now(timezone.utc),
                 })
 
-            # Feed OrderBookSniper (use spread as proxy since we don't have real orderbook)
-            # This will be enhanced when WebSocket is added
+            # Feed OrderBookSniper with real orderbook data
+            try:
+                ccxt_symbol = symbol.replace("USDT", "/USDT")
+                ob = await self.exchange.fetch_order_book(ccxt_symbol, limit=20)
+                orderbook_signal = m["orderbook_sniper"].get_signal(symbol, {
+                    "bids": ob.get("bids", []),
+                    "asks": ob.get("asks", []),
+                })
+            except Exception as e:
+                logger.debug(f"Orderbook fetch failed for {symbol}: {e}")
+
+            # Feed LiquidationHunter with volume-based liquidation proxy
+            if len(klines_5m) >= 20:
+                recent_vol = klines_5m["volume"].tail(5).mean()
+                avg_vol = klines_5m["volume"].tail(20).mean()
+                if avg_vol > 0:
+                    m["liquidation_hunter"].update_average(avg_vol * current_price)
+                if recent_vol > avg_vol * 2:
+                    # Large volume spike = potential liquidation cascade
+                    side = "LONG" if last_bar["close"] < last_bar["open"] else "SHORT"
+                    m["liquidation_hunter"].process_liquidation({
+                        "side": side,
+                        "quantity": recent_vol,
+                        "price": current_price,
+                        "timestamp": datetime.now(timezone.utc),
+                    })
 
             # Get directional biases from intelligence modules
             whale_signal = m["whale_tracker"].get_signal(symbol)
@@ -389,6 +419,26 @@ class TradingBot:
 
             # Generate signals
             signals = m["strategy_engine"].generate_signals(symbol, klines_5m)
+
+            # Pattern scanning
+            patterns = m["pattern_scanner"].scan(klines_5m, symbol)
+            for pattern in patterns:
+                from core.models import TradeSignal, MarketRegime
+                # Convert pattern to TradeSignal if confidence is high enough
+                if pattern.confidence >= 0.5:
+                    regime = m["regime_detector"].detect(klines_5m)
+                    pattern_signal = TradeSignal(
+                        symbol=symbol,
+                        direction=pattern.direction,
+                        confidence=pattern.confidence,
+                        entry_price=float(klines_5m.iloc[-1]["close"]),
+                        stop_loss=pattern.stop_price,
+                        take_profit=pattern.target_price,
+                        strategy=f"pattern_{pattern.name}",
+                        regime=regime,
+                        timeframe_score=0,
+                    )
+                    signals.append(pattern_signal)
 
             if not signals:
                 continue
@@ -536,6 +586,66 @@ class TradingBot:
                 except Exception as e:
                     logger.error(f"Daily evolution failed: {e}")
 
+            # Update sentiment every 5 minutes
+            if now.minute % 5 == 0 and now.second < 60:
+                try:
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        # Fear & Greed Index
+                        async with session.get("https://api.alternative.me/fng/?limit=1", timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                fg_value = int(data["data"][0]["value"])
+                                m["sentiment_radar"].update_fear_greed(fg_value)
+                                logger.debug(f"Fear & Greed updated: {fg_value}")
+
+                        # Long/Short ratio from Binance
+                        async with session.get(
+                            "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
+                            params={"symbol": "BTCUSDT", "period": "5m", "limit": 1},
+                            timeout=aiohttp.ClientTimeout(total=10)
+                        ) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                if data:
+                                    ls_ratio = float(data[0]["longShortRatio"])
+                                    m["sentiment_radar"].update_long_short_ratio(ls_ratio)
+                                    logger.debug(f"L/S ratio updated: {ls_ratio}")
+                except Exception as e:
+                    logger.debug(f"Sentiment update failed: {e}")
+
+            # Update funding rates every 30 minutes
+            if now.minute % 30 == 0 and now.second < 60:
+                try:
+                    for symbol in m["data_feed"].symbols:
+                        ccxt_sym = symbol.replace("USDT", "/USDT")
+                        funding = await self.exchange.fetch_funding_rate(ccxt_sym)
+                        rate = funding.get("fundingRate", 0)
+                        m["funding_rate_arb"].update_funding_rate(symbol, rate)
+                        logger.debug(f"Funding rate {symbol}: {rate}")
+                except Exception as e:
+                    logger.debug(f"Funding rate update failed: {e}")
+
+            # Daily altcoin rescan at 00:15 UTC
+            if now.hour == 0 and now.minute == 15:
+                try:
+                    tickers = await self.exchange.fetch_tickers()
+                    for symbol, ticker in tickers.items():
+                        if symbol.endswith("/USDT") and symbol != "BTC/USDT":
+                            internal_sym = symbol.replace("/", "")
+                            m["altcoin_radar"].score_coin(
+                                internal_sym,
+                                volume_24h=ticker.get("quoteVolume", 0),
+                                price_change_24h=ticker.get("percentage", 0),
+                            )
+                    top_alts = m["altcoin_radar"].get_top_alts()
+                    # Update DataFeed symbols: always BTC + top alts
+                    new_symbols = ["BTCUSDT"] + top_alts
+                    m["data_feed"].symbols = new_symbols
+                    logger.info(f"AltcoinRadar updated: trading {new_symbols}")
+                except Exception as e:
+                    logger.error(f"Altcoin rescan failed: {e}")
+
             # Reset daily counters at midnight
             if now.hour == 0 and now.minute == 0:
                 self._daily_pnl = 0.0
@@ -563,6 +673,13 @@ class TradingBot:
                     self.db.execute(
                         "INSERT INTO equity_snapshots (timestamp, equity) VALUES (?, ?)",
                         (now.isoformat(), snap_equity))
+                except Exception:
+                    pass
+
+            # Save klines every hour
+            if now.minute == 0 and self.db:
+                try:
+                    m["data_feed"].save_to_db(self.db)
                 except Exception:
                     pass
 
