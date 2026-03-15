@@ -113,7 +113,12 @@ with tab2:
     st.subheader("Open Orders")
     if exchange:
         try:
-            orders = exchange.fetch_open_orders()
+            orders = []
+            for sym in ["BTC/USDT", "ETH/USDT", "SOL/USDT"]:
+                try:
+                    orders.extend(exchange.fetch_open_orders(sym))
+                except Exception:
+                    pass
             if orders:
                 order_data = []
                 for o in orders:
