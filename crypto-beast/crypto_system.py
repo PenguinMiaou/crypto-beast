@@ -2,6 +2,7 @@
 """Crypto Beast v1.0 — Autonomous Crypto Trading Bot for Binance Futures."""
 import argparse
 import asyncio
+import os
 import signal as signal_module
 import subprocess
 import sys
@@ -208,18 +209,6 @@ class TradingBot:
                 telegram_token=env.get("TELEGRAM_BOT_TOKEN", ""),
                 telegram_chat_id=env.get("TELEGRAM_CHAT_ID", ""),
             )
-            from monitoring.telegram_bot import TelegramBot
-            telegram_bot = TelegramBot(
-                token=env.get("TELEGRAM_BOT_TOKEN", ""),
-                chat_id=env.get("TELEGRAM_CHAT_ID", ""),
-                db=self.db,
-                exchange=self.exchange,
-                bot_state={
-                    "mode": "LIVE" if not self.paper_mode else "PAPER",
-                    "starting_capital": wallet,
-                    "start_time": datetime.now(timezone.utc),
-                },
-            )
             monitor = MonitorData(self.db)
             system_guard = SystemGuard(latency_warn=1000, latency_halt=5000)
             # Don't use initial latency (includes SSL handshake)
@@ -252,7 +241,6 @@ class TradingBot:
                 "evolver": evolver,
                 "trade_reviewer": trade_reviewer,
                 "notifier": notifier,
-                "telegram_bot": telegram_bot,
                 "monitor": monitor,
                 "system_guard": system_guard,
                 "exchange_sync": exchange_sync,
@@ -349,6 +337,36 @@ class TradingBot:
         """Execute one full trading cycle."""
         m = self.modules
         self._cycle_count += 1
+
+        # Check watchdog state for pause/commands
+        _state_path = os.path.join(os.path.dirname(__file__), "watchdog.state")
+        if os.path.exists(_state_path):
+            try:
+                import json as _json
+                with open(_state_path) as _f:
+                    _wstate = _json.load(_f)
+                if _wstate.get("paused"):
+                    logger.info("Trading paused via watchdog")
+                    return
+                _cmd = _wstate.get("command")
+                if _cmd and isinstance(_cmd, dict):
+                    action = _cmd.get("action", "")
+                    if action == "CLOSE":
+                        symbol = _cmd.get("args", "")
+                        if symbol:
+                            await self._close_symbol_by_watchdog(symbol)
+                    elif action == "CLOSEALL":
+                        positions = await m["executor"].get_positions()
+                        await self._emergency_close(positions)
+                    elif action == "SHUTDOWN":
+                        logger.info("Shutdown command from watchdog")
+                        return
+                    # Clear the command after processing
+                    _wstate["command"] = None
+                    with open(_state_path, "w") as _f:
+                        _json.dump(_wstate, _f)
+            except Exception as e:
+                logger.debug(f"Failed to read watchdog.state: {e}")
 
         from core.models import Portfolio, ShieldAction, OrderType, ExecutionPlan
 
@@ -451,16 +469,28 @@ class TradingBot:
 
         # 4. Emergency check
         action = m["emergency_shield"].check(portfolio)
-        if action != ShieldAction.CONTINUE:
+        if action == ShieldAction.EMERGENCY_CLOSE:
             logger.warning(f"Emergency shield: {action.value}")
             await self._emergency_close(positions)
             m["notifier"].send("EMERGENCY", f"Shield: {action.value}", level="critical")
+            return
+        elif action == ShieldAction.HALT:
+            logger.warning(f"Emergency shield: {action.value}")
+            await self._emergency_close(positions)
+            m["notifier"].send("EMERGENCY", "Shield: HALT — 今日亏损超限，暂停交易24小时", level="critical")
+            return
+        elif action == ShieldAction.ALREADY_NOTIFIED:
+            # Already halted, skip silently
             return
 
         # 5. Check cooldown
         if m["emergency_shield"].is_in_cooldown():
             logger.info("In cooldown, skipping trading")
             return
+
+        # Check if just resumed from cooldown
+        if m["emergency_shield"].pop_just_resumed():
+            m["notifier"].send("恢复交易", "Shield冷却结束，机器人已恢复自动交易", level="info")
 
         # 6. Recovery mode adjustment
         m["recovery_mode"].assess_state(portfolio)
@@ -486,10 +516,8 @@ class TradingBot:
                 m["multi_timeframe"].update(symbol, klines_by_tf)
 
         # 10. Generate and execute signals
-        # Check if trading is paused via Telegram
-        _trading_paused = m.get("telegram_bot") and m["telegram_bot"].is_paused
-        if _trading_paused:
-            logger.debug("Trading paused via Telegram, skipping signal generation")
+        # Paused state is now checked via watchdog.state at the top of run_trading_cycle
+        _trading_paused = False
 
         opened_this_cycle = set()
         for symbol in data_feed.symbols:
@@ -625,13 +653,34 @@ class TradingBot:
                 f"Positions: {len(positions)} | Session: {m['session_trader'].get_current_session()}"
             )
 
+    async def _close_symbol_by_watchdog(self, symbol: str) -> None:
+        """Close a specific symbol position via watchdog command."""
+        from core.models import OrderType
+        positions = await self.modules["executor"].get_positions()
+        for pos in positions:
+            if pos.symbol == symbol:
+                await self.modules["executor"].close_position(pos, OrderType.MARKET)
+                logger.info(f"Closed {symbol} via watchdog command")
+                return
+        logger.warning(f"No open position for {symbol} to close")
+
     async def _emergency_close(self, positions) -> None:
-        """Close all positions in emergency."""
+        """Close all positions on exchange AND update DB status."""
         from core.models import OrderType
         executor = self.modules["executor"]
         await executor.cancel_all_pending()
         for pos in positions:
-            await executor.close_position(pos, OrderType.MARKET)
+            result = await executor.close_position(pos, OrderType.MARKET)
+            # Update DB: mark as CLOSED
+            if result.success:
+                pnl = pos.unrealized_pnl
+                self.db.execute(
+                    "UPDATE trades SET status='CLOSED', exit_price=?, exit_time=?, pnl=? "
+                    "WHERE symbol=? AND status='OPEN'",
+                    (result.avg_fill_price, datetime.now(timezone.utc).isoformat(),
+                     round(pnl, 4), pos.symbol),
+                )
+                logger.info(f"Emergency closed {pos.symbol}: PnL={pnl:+.4f}")
 
     async def run_scheduler(self, shutdown: GracefulShutdown) -> None:
         """Background scheduler for periodic tasks."""
@@ -838,9 +887,6 @@ async def main(args):
     # Start scheduler in background
     scheduler_task = asyncio.create_task(bot.run_scheduler(shutdown))
 
-    # Start Telegram bot polling
-    telegram_task = asyncio.create_task(bot.modules["telegram_bot"].start_polling())
-
     interval = bot.config.main_loop_interval
     logger.info(f"Main loop started (every {interval}s). Press Ctrl+C to stop.")
 
@@ -859,11 +905,6 @@ async def main(args):
         scheduler_task.cancel()
         try:
             await scheduler_task
-        except asyncio.CancelledError:
-            pass
-        telegram_task.cancel()
-        try:
-            await telegram_task
         except asyncio.CancelledError:
             pass
         await bot.shutdown_sequence()
