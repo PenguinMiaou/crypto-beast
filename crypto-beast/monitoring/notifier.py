@@ -1,6 +1,6 @@
 """Notification system: Telegram + macOS native notifications."""
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 from loguru import logger
 
@@ -20,7 +20,7 @@ class Notifier:
         # Record
         self._history.append({
             "title": title, "message": message,
-            "level": level, "timestamp": datetime.utcnow()
+            "level": level, "timestamp": datetime.now(timezone.utc)
         })
 
         # macOS notification

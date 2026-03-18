@@ -4,35 +4,43 @@
 Includes trailing stop and profit drawback protection.
 """
 from typing import Dict, List, Optional, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 
 from loguru import logger
 from core.database import Database
 from core.models import Direction, OrderType, Position
 
-# Default thresholds (can be overridden via constructor)
-DEFAULT_PROFIT_PROTECT_ACTIVATION_PCT = 0.02   # Activate after 2% profit
-DEFAULT_PROFIT_PROTECT_DRAWBACK_PCT = 0.50     # Close if 50% of peak profit is given back
-
-
 class PositionManager:
     """Monitor open positions and trigger SL/TP/trailing/profit-protection exits."""
 
     def __init__(self, db: Database, get_price_fn: Callable[[str], float],
-                 executor=None,
-                 profit_protect_activation_pct: float = DEFAULT_PROFIT_PROTECT_ACTIVATION_PCT,
-                 profit_protect_drawback_pct: float = DEFAULT_PROFIT_PROTECT_DRAWBACK_PCT):
+                 config, executor=None):
         self.db = db
         self._get_price = get_price_fn
         self._executor = executor  # LiveExecutor or None for paper mode
 
         # Profit protection: activate at X% profit, close if Y% given back
-        self._profit_protect_activation_pct = profit_protect_activation_pct
-        self._profit_protect_drawback_pct = profit_protect_drawback_pct
+        self._profit_protect_activation_pct = config.profit_protect_activation_pct
+        self._profit_protect_drawback_pct = config.profit_protect_drawback_pct
 
         # Track peak prices and profits per trade for trailing/protection
+        # Peaks are persisted to DB (peak_profit column) so restarts don't lose them
         self._peak_prices: Dict[int, float] = {}   # trade_id -> peak favorable price
         self._peak_profits: Dict[int, float] = {}   # trade_id -> peak profit %
+        self._load_peaks_from_db()
+
+    def _load_peaks_from_db(self) -> None:
+        """Load persisted peak profits from DB on startup."""
+        try:
+            rows = self.db.execute(
+                "SELECT id, peak_profit FROM trades WHERE status = 'OPEN' AND peak_profit > 0"
+            ).fetchall()
+            for trade_id, peak_profit in rows:
+                self._peak_profits[trade_id] = peak_profit
+            if rows:
+                logger.info(f"Restored peak tracking for {len(rows)} positions from DB")
+        except Exception as e:
+            logger.debug(f"Failed to load peaks from DB: {e}")
 
     def check_positions(self) -> List[dict]:
         """Check all open positions against SL/TP, trailing stop, and profit protection.
@@ -58,11 +66,19 @@ class PositionManager:
             else:
                 profit_pct = (entry_price - current_price) / entry_price
 
-            # Update peak tracking
+            # Update peak tracking (persisted to DB so restarts don't lose it)
             peak_profit = self._peak_profits.get(trade_id, 0)
             if profit_pct > peak_profit:
                 self._peak_profits[trade_id] = profit_pct
                 self._peak_prices[trade_id] = current_price
+                # Persist to DB
+                try:
+                    self.db.execute(
+                        "UPDATE trades SET peak_profit = ? WHERE id = ?",
+                        (round(profit_pct, 6), trade_id)
+                    )
+                except Exception:
+                    pass
             peak_profit = self._peak_profits.get(trade_id, 0)
 
             reason = None
@@ -124,7 +140,7 @@ class PositionManager:
         """Close a trade in the database."""
         self.db.execute(
             "UPDATE trades SET exit_price = ?, exit_time = ?, pnl = ?, fees = fees + ?, status = 'CLOSED' WHERE id = ?",
-            (trade["exit_price"], datetime.utcnow().isoformat(), trade["pnl"], trade["fees"], trade["trade_id"])
+            (trade["exit_price"], datetime.now(timezone.utc).isoformat(), trade["pnl"], trade["fees"], trade["trade_id"])
         )
         logger.info(
             f"CLOSED {trade['side']} {trade['symbol']} @ ${trade['exit_price']:,.2f} | "
@@ -151,7 +167,7 @@ class PositionManager:
                 leverage=trade["leverage"],
                 unrealized_pnl=trade["pnl"],
                 strategy=trade["strategy"],
-                entry_time=datetime.utcnow(),
+                entry_time=datetime.now(timezone.utc),
                 current_stop=0.0,
             )
             result = await self._executor.close_position(position, OrderType.MARKET)
@@ -160,7 +176,7 @@ class PositionManager:
                 actual_pnl = trade["pnl"]  # Could recalculate from result.avg_fill_price
                 self.db.execute(
                     "UPDATE trades SET exit_price = ?, exit_time = ?, pnl = ?, fees = fees + ?, status = 'CLOSED' WHERE id = ?",
-                    (result.avg_fill_price, datetime.utcnow().isoformat(),
+                    (result.avg_fill_price, datetime.now(timezone.utc).isoformat(),
                      actual_pnl, result.fees_paid, trade["trade_id"])
                 )
                 logger.info(

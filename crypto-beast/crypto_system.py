@@ -69,9 +69,8 @@ class TradingBot:
         from defense.risk_manager import RiskManager
         from defense.anti_trap import AntiTrap
         from defense.fee_optimizer import FeeOptimizer
+        from defense.defense_manager import DefenseManager
         from execution.paper_executor import PaperExecutor
-        from execution.emergency_shield import EmergencyShield
-        from execution.recovery_mode import RecoveryMode
         from execution.smart_order import SmartOrder
         from evolution.compound_engine import CompoundEngine
         from evolution.evolver import Evolver
@@ -170,9 +169,8 @@ class TradingBot:
                 self.config.max_risk_per_trade = 0.02  # 2% risk per trade
             risk_manager = RiskManager(self.config)
             anti_trap = AntiTrap()
-            fee_optimizer = FeeOptimizer()
-            emergency_shield = EmergencyShield(self.config)
-            recovery_mode = RecoveryMode(self.config)
+            fee_optimizer = FeeOptimizer(self.config)
+            defense = DefenseManager(self.config)
 
             # Execution
             def get_price(symbol):
@@ -196,6 +194,7 @@ class TradingBot:
             from execution.position_manager import PositionManager
             position_manager = PositionManager(
                 db=self.db, get_price_fn=get_price,
+                config=self.config,
                 executor=executor if not self.paper_mode else None,
             )
 
@@ -233,8 +232,7 @@ class TradingBot:
                 "risk_manager": risk_manager,
                 "anti_trap": anti_trap,
                 "fee_optimizer": fee_optimizer,
-                "emergency_shield": emergency_shield,
-                "recovery_mode": recovery_mode,
+                "defense": defense,
                 "executor": executor,
                 "position_manager": position_manager,
                 "compound_engine": compound_engine,
@@ -284,12 +282,27 @@ class TradingBot:
             leverage = int(pos.get("leverage", 1))
             unrealized = float(pos.get("unrealizedProfit", 0))
 
-            if symbol in db_symbols:
-                # Already in DB — update qty/entry but keep SL/TP/strategy
+            # Count how many OPEN records exist for this symbol
+            open_count = self.db.execute(
+                "SELECT COUNT(*) FROM trades WHERE symbol=? AND status='OPEN'", (symbol,)
+            ).fetchone()[0]
+
+            if open_count == 1:
+                # Exactly one record — update it, keep SL/TP/strategy
                 self.db.execute(
                     "UPDATE trades SET quantity=?, entry_price=?, leverage=? WHERE symbol=? AND status='OPEN'",
                     (abs(amt), entry_price, leverage, symbol))
                 logger.info(f"  Synced: {side} {symbol} qty={abs(amt)} @ {entry_price} | PnL={unrealized:+.2f}")
+            elif open_count > 1:
+                # Duplicates — keep earliest, delete rest, then update
+                self.db.execute(
+                    "DELETE FROM trades WHERE status='OPEN' AND symbol=? AND id NOT IN "
+                    "(SELECT MIN(id) FROM trades WHERE status='OPEN' AND symbol=?)",
+                    (symbol, symbol))
+                self.db.execute(
+                    "UPDATE trades SET quantity=?, entry_price=?, leverage=? WHERE symbol=? AND status='OPEN'",
+                    (abs(amt), entry_price, leverage, symbol))
+                logger.info(f"  Deduped+Synced: {side} {symbol} (removed {open_count - 1} duplicates)")
             else:
                 # New position — insert
                 self.db.execute(
@@ -310,7 +323,110 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"Failed to cancel stale orders: {e}")
 
+        # Reconcile CLOSED trades PnL/fees with Binance income API
+        await self._reconcile_pnl_with_exchange()
+
+        # Initialize peak tracking for reconciled positions
+        position_manager = self.modules.get("position_manager")
+        if position_manager:
+            rows = self.db.execute(
+                "SELECT id, symbol, side, entry_price FROM trades WHERE status = 'OPEN'"
+            ).fetchall()
+            for row in rows:
+                trade_id = row[0]
+                if trade_id not in position_manager._peak_profits:
+                    position_manager._peak_profits[trade_id] = 0.0
+                    position_manager._peak_prices[trade_id] = row[3]
+            if rows:
+                logger.info(f"Initialized peak tracking for {len(rows)} reconciled positions")
+
         logger.info(f"Reconciliation complete: {len(positions)} positions synced")
+
+    async def _reconcile_pnl_with_exchange(self) -> None:
+        """Reconcile CLOSED trade PnL and fees with Binance income API (source of truth)."""
+        try:
+            import aiohttp, hmac, hashlib, time as _time
+            from urllib.parse import urlencode
+            from collections import defaultdict
+            from dotenv import dotenv_values
+
+            env = dotenv_values(os.path.join(os.path.dirname(__file__), ".env"))
+            api_key = env.get("BINANCE_API_KEY", "")
+            api_secret = env.get("BINANCE_API_SECRET", "")
+
+            async def fetch_income(income_type: str) -> list:
+                ts = int(_time.time() * 1000)
+                params = {"incomeType": income_type, "limit": 1000, "timestamp": ts}
+                query = urlencode(params)
+                sig = hmac.new(api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+                url = f"https://fapi.binance.com/fapi/v1/income?{query}&signature={sig}"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers={"X-MBX-APIKEY": api_key}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            return await resp.json()
+                return []
+
+            # Fetch realized PnL and commissions from Binance
+            pnl_records = await fetch_income("REALIZED_PNL")
+            fee_records = await fetch_income("COMMISSION")
+
+            if not pnl_records:
+                return
+
+            # Aggregate by symbol
+            pnl_by_symbol = defaultdict(float)
+            fees_by_symbol = defaultdict(float)
+            for r in pnl_records:
+                pnl_by_symbol[r["symbol"]] += float(r.get("income", 0))
+            for r in fee_records:
+                fees_by_symbol[r["symbol"]] += abs(float(r.get("income", 0)))
+
+            # Compare with DB
+            db_rows = self.db.execute(
+                "SELECT symbol, SUM(pnl), SUM(fees) FROM trades WHERE status='CLOSED' GROUP BY symbol"
+            ).fetchall()
+            db_pnl = {r[0]: float(r[1] or 0) for r in db_rows}
+            db_fees = {r[0]: float(r[2] or 0) for r in db_rows}
+
+            corrected = 0
+            for symbol in set(list(pnl_by_symbol.keys()) + list(db_pnl.keys())):
+                binance_pnl = pnl_by_symbol.get(symbol, 0)
+                local_pnl = db_pnl.get(symbol, 0)
+                binance_fee = fees_by_symbol.get(symbol, 0)
+                local_fee = db_fees.get(symbol, 0)
+
+                pnl_diff = abs(binance_pnl - local_pnl)
+                fee_diff = abs(binance_fee - local_fee)
+
+                if pnl_diff > 0.01 or fee_diff > 0.01:
+                    # Find the most recent CLOSED trade for this symbol to apply correction
+                    last_trade = self.db.execute(
+                        "SELECT id FROM trades WHERE symbol=? AND status='CLOSED' ORDER BY exit_time DESC LIMIT 1",
+                        (symbol,)
+                    ).fetchone()
+                    if last_trade:
+                        # Apply PnL difference to last trade
+                        self.db.execute(
+                            "UPDATE trades SET pnl = pnl + ? WHERE id = ?",
+                            (round(binance_pnl - local_pnl, 4), last_trade[0])
+                        )
+                        # Apply fee difference across all trades for this symbol
+                        trade_count = self.db.execute(
+                            "SELECT COUNT(*) FROM trades WHERE symbol=?", (symbol,)
+                        ).fetchone()[0]
+                        if trade_count > 0:
+                            fee_per_trade = round(binance_fee / trade_count, 4)
+                            self.db.execute(
+                                "UPDATE trades SET fees=? WHERE symbol=?",
+                                (fee_per_trade, symbol)
+                            )
+                        corrected += 1
+                        logger.info(f"  PnL corrected {symbol}: DB {local_pnl:+.4f} -> Binance {binance_pnl:+.4f} (diff {binance_pnl - local_pnl:+.4f})")
+
+            if corrected:
+                logger.info(f"  PnL reconciliation: {corrected} symbol(s) corrected from Binance income API")
+        except Exception as e:
+            logger.debug(f"PnL reconciliation skipped: {e}")
 
     async def fetch_market_data(self) -> bool:
         """Fetch latest klines from Binance for all symbols/timeframes."""
@@ -343,32 +459,40 @@ class TradingBot:
         if os.path.exists(_state_path):
             try:
                 import json as _json
-                with open(_state_path) as _f:
-                    _wstate = _json.load(_f)
-                if _wstate.get("paused"):
-                    logger.info("Trading paused via watchdog")
-                    return
-                _cmd = _wstate.get("command")
-                if _cmd and isinstance(_cmd, dict):
-                    action = _cmd.get("action", "")
-                    if action == "CLOSE":
-                        symbol = _cmd.get("args", "")
-                        if symbol:
-                            await self._close_symbol_by_watchdog(symbol)
-                    elif action == "CLOSEALL":
-                        positions = await m["executor"].get_positions()
-                        await self._emergency_close(positions)
-                    elif action == "SHUTDOWN":
-                        logger.info("Shutdown command from watchdog")
-                        return
-                    # Clear the command after processing
-                    _wstate["command"] = None
-                    with open(_state_path, "w") as _f:
-                        _json.dump(_wstate, _f)
+                import fcntl
+                with open(_state_path, "r+") as _f:
+                    fcntl.flock(_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    try:
+                        _wstate = _json.load(_f)
+                        if _wstate.get("paused"):
+                            logger.info("Trading paused via watchdog")
+                            return
+                        _cmd = _wstate.get("command")
+                        if _cmd and isinstance(_cmd, dict):
+                            action = _cmd.get("action", "")
+                            if action == "CLOSE":
+                                symbol = _cmd.get("args", "")
+                                if symbol:
+                                    await self._close_symbol_by_watchdog(symbol)
+                            elif action == "CLOSEALL":
+                                positions = await m["executor"].get_positions()
+                                await self._emergency_close(positions)
+                            elif action == "SHUTDOWN":
+                                logger.info("Shutdown command from watchdog")
+                                return
+                            _wstate["command"] = None
+                            _f.seek(0)
+                            _f.truncate()
+                            _json.dump(_wstate, _f)
+                    finally:
+                        fcntl.flock(_f, fcntl.LOCK_UN)
+            except BlockingIOError:
+                # Non-blocking: if watchdog holds the lock, next 5s cycle will pick it up
+                logger.debug("Watchdog state locked by another process, skipping")
             except Exception as e:
                 logger.debug(f"Failed to read watchdog.state: {e}")
 
-        from core.models import Portfolio, ShieldAction, OrderType, ExecutionPlan
+        from core.models import Portfolio, ShieldAction, OrderType, ExecutionPlan, ValidatedOrder
 
         # 1. Fetch market data
         t0 = time.time()
@@ -381,6 +505,7 @@ class TradingBot:
             logger.warning("Data fetch incomplete, continuing with available data")
 
         # Feed intelligence modules with latest data
+        intel_biases = {}  # symbol -> list of DirectionalBias
         data_feed = m["data_feed"]
         for symbol in data_feed.symbols:
             klines_5m = data_feed.get_klines(symbol, "5m")
@@ -401,6 +526,7 @@ class TradingBot:
                 })
 
             # Feed OrderBookSniper with real orderbook data
+            orderbook_signal = None
             try:
                 ccxt_symbol = symbol.replace("USDT", "/USDT")
                 ob = await self.exchange.fetch_order_book(ccxt_symbol, limit=20)
@@ -432,26 +558,45 @@ class TradingBot:
             sentiment_signal = m["sentiment_radar"].get_signal(symbol)
             liquidation_signal = m["liquidation_hunter"].get_signal(symbol)
 
-        # 2. Check system health
-        if not m["system_guard"].should_trade():
-            logger.warning(f"System not healthy (latency={m['system_guard']._api_latency_ms:.0f}ms), skipping")
-            return
+            # Collect intel biases for signal enhancement
+            biases = []
+            if whale_signal and whale_signal.confidence > 0.3:
+                biases.append(whale_signal)
+            if sentiment_signal and sentiment_signal.confidence > 0.3:
+                biases.append(sentiment_signal)
+            if liquidation_signal and liquidation_signal.confidence > 0.3:
+                biases.append(liquidation_signal)
+            try:
+                if orderbook_signal and orderbook_signal.confidence > 0.3:
+                    biases.append(orderbook_signal)
+            except Exception:
+                pass
+            if biases:
+                intel_biases[symbol] = biases
+
+        # 2. Check system health (affects new trades only, not position monitoring)
+        system_healthy = m["system_guard"].should_trade()
+        if not system_healthy:
+            logger.warning(f"System not healthy (latency={m['system_guard']._api_latency_ms:.0f}ms), skipping new trades (position monitoring continues)")
 
         # 3. Build portfolio state
         positions = await m["executor"].get_positions()
 
-        # Calculate real equity from DB
-        closed_pnl = self.db.execute(
-            "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status = 'CLOSED'"
-        ).fetchone()[0]
-        open_fees = self.db.execute(
-            "SELECT COALESCE(SUM(fees), 0) FROM trades WHERE status = 'OPEN'"
-        ).fetchone()[0]
-        equity = self.config.starting_capital + closed_pnl - open_fees
-
-        # Add unrealized PnL from open positions
-        for pos in positions:
-            equity += pos.unrealized_pnl
+        # Get real equity from Binance (ground truth, not DB calculation)
+        try:
+            account = await self.exchange.fapiPrivateV2GetAccount()
+            equity = float(account.get("totalMarginBalance", 0))
+        except Exception:
+            # Fallback to DB calculation if API fails
+            closed_pnl = self.db.execute(
+                "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status = 'CLOSED'"
+            ).fetchone()[0]
+            open_fees = self.db.execute(
+                "SELECT COALESCE(SUM(fees), 0) FROM trades WHERE status = 'OPEN'"
+            ).fetchone()[0]
+            equity = self.config.starting_capital + closed_pnl - open_fees
+            for pos in positions:
+                equity += pos.unrealized_pnl
 
         self._peak_equity = max(self._peak_equity, equity)
         drawdown = (self._peak_equity - equity) / self._peak_equity if self._peak_equity > 0 else 0
@@ -467,61 +612,60 @@ class TradingBot:
             drawdown_pct=drawdown,
         )
 
-        # 4. Emergency check
-        action = m["emergency_shield"].check(portfolio)
-        if action == ShieldAction.EMERGENCY_CLOSE:
-            logger.warning(f"Emergency shield: {action.value}")
+        # 4. Defense check (unified recovery + emergency)
+        defense_result = m["defense"].check(portfolio)
+        if defense_result.action == ShieldAction.EMERGENCY_CLOSE:
+            logger.warning("Defense: EMERGENCY_CLOSE")
             await self._emergency_close(positions)
-            m["notifier"].send("EMERGENCY", f"Shield: {action.value}", level="critical")
+            m["notifier"].send("EMERGENCY", "Shield: drawdown limit — all positions closed", level="critical")
             return
-        elif action == ShieldAction.HALT:
-            logger.warning(f"Emergency shield: {action.value}")
+        elif defense_result.action == ShieldAction.HALT:
+            logger.warning("Defense: HALT")
             await self._emergency_close(positions)
-            m["notifier"].send("EMERGENCY", "Shield: HALT — 今日亏损超限，暂停交易24小时", level="critical")
+            m["notifier"].send("EMERGENCY", "Shield: HALT — daily loss limit, pausing 24h", level="critical")
             return
-        elif action == ShieldAction.ALREADY_NOTIFIED:
-            # Already halted, skip silently
+        elif defense_result.action == ShieldAction.ALREADY_NOTIFIED:
             return
 
         # 5. Check cooldown
-        if m["emergency_shield"].is_in_cooldown():
+        if m["defense"].is_in_cooldown():
             logger.info("In cooldown, skipping trading")
             return
 
-        # Check if just resumed from cooldown
-        if m["emergency_shield"].pop_just_resumed():
-            m["notifier"].send("恢复交易", "Shield冷却结束，机器人已恢复自动交易", level="info")
+        if m["defense"].pop_just_resumed():
+            m["notifier"].send("Resume", "Shield cooldown expired, resuming", level="info")
 
-        # 6. Recovery mode adjustment
-        m["recovery_mode"].assess_state(portfolio)
-        recovery_params = m["recovery_mode"].get_adjusted_params()
+        recovery_params = defense_result.params
 
-        # 7. Check funding settlement
+        # 7-9: Preparation for signal generation
+        _skip_new_trades = not system_healthy
+
         if m["event_engine"].should_reduce_exposure():
             logger.debug("Near funding settlement, skipping new entries")
-            return
+            _skip_new_trades = True
 
-        # 8. Apply pending evolution
-        m["evolver"].apply_if_pending()
+        if not _skip_new_trades:
+            m["evolver"].apply_if_pending()
 
-        # 9. Update multi-timeframe confluence
-        data_feed = m["data_feed"]
+            # Update multi-timeframe confluence
+            data_feed = m["data_feed"]
+            for symbol in data_feed.symbols:
+                klines_by_tf = {}
+                for tf in data_feed.intervals:
+                    kl = data_feed.get_klines(symbol, tf)
+                    if len(kl) > 0:
+                        klines_by_tf[tf] = kl
+                if klines_by_tf:
+                    m["multi_timeframe"].update(symbol, klines_by_tf)
+
+        # 10. Generate and execute signals (skip if unhealthy/funding — position monitoring always runs)
+        # Skip signal generation entirely if positions are full
+        if len(positions) >= self.config.max_concurrent_positions:
+            _skip_new_trades = True
+
+        opened_this_cycle = 0  # Max 1 new position per cycle
         for symbol in data_feed.symbols:
-            klines_by_tf = {}
-            for tf in data_feed.intervals:
-                kl = data_feed.get_klines(symbol, tf)
-                if len(kl) > 0:
-                    klines_by_tf[tf] = kl
-            if klines_by_tf:
-                m["multi_timeframe"].update(symbol, klines_by_tf)
-
-        # 10. Generate and execute signals
-        # Paused state is now checked via watchdog.state at the top of run_trading_cycle
-        _trading_paused = False
-
-        opened_this_cycle = set()
-        for symbol in data_feed.symbols:
-            if _trading_paused:
+            if _skip_new_trades or opened_this_cycle >= 1:
                 break
 
             klines_5m = data_feed.get_klines(symbol, "5m")
@@ -554,38 +698,100 @@ class TradingBot:
             if not signals:
                 continue
 
-            # Deduplicate: keep only highest confidence per symbol
-            best_signal = max(signals, key=lambda s: s.confidence)
-            signals = [best_signal]
+            # Sort by confidence (strategy engine already deduped, pattern signals may be added)
+            signals.sort(key=lambda s: s.confidence, reverse=True)
 
-            # Skip if we already opened a position for this symbol this cycle
-            if symbol in opened_this_cycle:
-                continue
+            # Skip if we already opened a position this cycle (max 1 per cycle)
+            if opened_this_cycle >= 1:
+                break
 
             for signal in signals:
+                # Apply intelligence module biases
+                from core.models import SignalType, Direction
+                symbol_biases = intel_biases.get(signal.symbol, [])
+                if symbol_biases:
+                    signal_type = SignalType.BULLISH if signal.direction == Direction.LONG else SignalType.BEARISH
+                    agreement_count = sum(1 for b in symbol_biases if b.direction == signal_type)
+                    conflict_count = sum(1 for b in symbol_biases if b.direction != signal_type and b.direction != SignalType.NEUTRAL)
+                    intel_adj = agreement_count * 0.03 - conflict_count * 0.05
+                    signal.confidence = max(0.05, min(1.0, signal.confidence + intel_adj))
+                    if intel_adj != 0:
+                        logger.debug(f"Intel adjustment {signal.symbol}: {intel_adj:+.2f} ({agreement_count} agree, {conflict_count} conflict)")
+
                 # AntiTrap filter
                 if m["anti_trap"].is_trap(signal, klines_5m):
                     logger.debug(f"Signal trapped: {signal.symbol} {signal.direction.value}")
+                    try:
+                        self.db.execute(
+                            "INSERT INTO rejected_signals (symbol, side, strategy, reason, signal_price, timestamp) VALUES (?,?,?,?,?,?)",
+                            (signal.symbol, signal.direction.value, signal.strategy, "anti_trap: detected as trap",
+                             signal.entry_price, datetime.now(timezone.utc).isoformat())
+                        )
+                    except Exception:
+                        pass
                     continue
 
+                # MTF confluence filter — block signals that conflict with higher timeframes
+                mtf_direction = SignalType.BULLISH if signal.direction == Direction.LONG else SignalType.BEARISH
+                mtf_min = recovery_params.get("mtf_min_score", 5)
+                confluence = m["multi_timeframe"].get_confluence(signal.symbol)
+                if confluence and abs(confluence.score) >= mtf_min:
+                    # Strong MTF signal exists — check if it conflicts
+                    if confluence.direction != mtf_direction and confluence.direction != SignalType.NEUTRAL:
+                        logger.debug(f"MTF filter: {signal.symbol} {signal.direction.value} conflicts with MTF {confluence.direction.value} (score={confluence.score})")
+                        try:
+                            self.db.execute(
+                                "INSERT INTO rejected_signals (symbol, side, strategy, reason, signal_price, timestamp) VALUES (?,?,?,?,?,?)",
+                                (signal.symbol, signal.direction.value, signal.strategy,
+                                 f"mtf_filter: conflicts with MTF (score={confluence.score})",
+                                 signal.entry_price, datetime.now(timezone.utc).isoformat())
+                            )
+                        except Exception:
+                            pass
+                        continue
+                # Weak/neutral MTF lets signals through — don't block on insufficient data
+
                 # Apply recovery constraints (relaxed in paper mode)
-                min_conf_recovery = recovery_params.get("min_confidence", 0.5)
-                if self.paper_mode:
-                    min_conf_recovery = min(0.15, min_conf_recovery)
+                min_conf_recovery = recovery_params.get("min_confidence", 0.3)
                 if signal.confidence < min_conf_recovery:
                     logger.debug(f"Signal below recovery threshold: {signal.confidence} < {min_conf_recovery}")
+                    try:
+                        self.db.execute(
+                            "INSERT INTO rejected_signals (symbol, side, strategy, reason, signal_price, timestamp) VALUES (?,?,?,?,?,?)",
+                            (signal.symbol, signal.direction.value, signal.strategy,
+                             f"recovery_threshold: {signal.confidence:.3f} < {min_conf_recovery:.3f}",
+                             signal.entry_price, datetime.now(timezone.utc).isoformat())
+                        )
+                    except Exception:
+                        pass
                     continue
 
                 # Risk validation (lower threshold in paper mode)
-                min_conf = 0.1 if self.paper_mode else 0.3
+                min_conf = 0.3
                 order = m["risk_manager"].validate(signal, portfolio, min_confidence=min_conf)
                 if order is None:
+                    try:
+                        self.db.execute(
+                            "INSERT INTO rejected_signals (symbol, side, strategy, reason, signal_price, timestamp) VALUES (?,?,?,?,?,?)",
+                            (signal.symbol, signal.direction.value, signal.strategy,
+                             "risk_manager: validation failed",
+                             signal.entry_price, datetime.now(timezone.utc).isoformat())
+                        )
+                    except Exception:
+                        pass
                     continue
 
                 # Cap leverage per recovery mode
                 max_lev = recovery_params.get("max_leverage", 10)
                 if order.leverage > max_lev:
-                    order = order  # RiskManager already handles this
+                    order = ValidatedOrder(
+                        signal=order.signal,
+                        quantity=order.quantity,
+                        leverage=max_lev,
+                        order_type=order.order_type,
+                        risk_amount=order.risk_amount,
+                        max_slippage=order.max_slippage,
+                    )
 
                 # Fee optimization
                 order_type = m["fee_optimizer"].recommend_order_type(signal)
@@ -593,28 +799,57 @@ class TradingBot:
                     order.quantity * signal.entry_price, order_type)
                 if not m["fee_optimizer"].is_within_budget(fee_est):
                     logger.debug("Fee budget exceeded, skipping")
+                    try:
+                        self.db.execute(
+                            "INSERT INTO rejected_signals (symbol, side, strategy, reason, signal_price, timestamp) VALUES (?,?,?,?,?,?)",
+                            (signal.symbol, signal.direction.value, signal.strategy,
+                             "fee_optimizer: budget exceeded",
+                             signal.entry_price, datetime.now(timezone.utc).isoformat())
+                        )
+                    except Exception:
+                        pass
                     continue
 
-                # Create execution plan — small accounts use single entry (no DCA split)
-                urgency = 1.0 if portfolio.equity < 500 else signal.confidence
-                plan = m["smart_order"].plan_execution(order, urgency=urgency)
+                # Small accounts (<$500) use single entry in live (urgency=1.0 for no DCA split)
+                # Paper mode uses real confidence to test DCA
+                if portfolio.equity < 500 and not self.paper_mode:
+                    plan = m["smart_order"].plan_execution(order, urgency=1.0)
+                else:
+                    plan = m["smart_order"].plan_execution(order, urgency=signal.confidence)
+
+                # Override order type: use LIMIT when confidence <= 0.8 (saves ~50% fees)
+                recommended_type = m["fee_optimizer"].recommend_order_type(signal)
+                if recommended_type == OrderType.LIMIT and plan.entry_tranches:
+                    for tranche in plan.entry_tranches:
+                        tranche["type"] = "LIMIT"
+                        tranche["price"] = signal.entry_price
 
                 # Execute
                 result = await m["executor"].execute(plan)
                 if result.success:
-                    opened_this_cycle.add(symbol)
+                    opened_this_cycle += 1
                     m["fee_optimizer"].record_fee(result.fees_paid)
                     self._daily_fees += result.fees_paid
+                    # Track slippage
+                    expected_price = signal.entry_price
+                    actual_price = result.avg_fill_price
+                    slippage_pct = abs(actual_price - expected_price) / expected_price if expected_price > 0 else 0
+                    if slippage_pct > 0.001:  # > 0.1%
+                        logger.warning(
+                            f"HIGH SLIPPAGE: {symbol} expected ${expected_price:,.2f} got ${actual_price:,.2f} "
+                            f"({slippage_pct:.3%})"
+                        )
                     m["notifier"].send(
                         "Trade Opened",
                         f"{signal.direction.value} {symbol} @ ${result.avg_fill_price:,.2f} | "
                         f"qty={result.total_filled:.6f} | conf={signal.confidence:.2f} | "
-                        f"strategy={signal.strategy}",
+                        f"slip={slippage_pct:.3%} | strategy={signal.strategy}",
                     )
                     logger.info(
                         f"TRADE: {signal.direction.value} {symbol} @ ${result.avg_fill_price:,.2f} | "
                         f"strategy={signal.strategy} | conf={signal.confidence:.3f}"
                     )
+                    break  # Max 1 trade per symbol per cycle
 
         # 11. Check existing positions for SL/TP
         to_close = m["position_manager"].check_positions()
@@ -673,14 +908,16 @@ class TradingBot:
             result = await executor.close_position(pos, OrderType.MARKET)
             # Update DB: mark as CLOSED
             if result.success:
-                pnl = pos.unrealized_pnl
+                pnl = pos.unrealized_pnl - result.fees_paid
                 self.db.execute(
-                    "UPDATE trades SET status='CLOSED', exit_price=?, exit_time=?, pnl=? "
+                    "UPDATE trades SET status='CLOSED', exit_price=?, exit_time=?, pnl=?, fees=fees+? "
                     "WHERE symbol=? AND status='OPEN'",
                     (result.avg_fill_price, datetime.now(timezone.utc).isoformat(),
-                     round(pnl, 4), pos.symbol),
+                     round(pnl, 4), round(result.fees_paid, 6), pos.symbol),
                 )
-                logger.info(f"Emergency closed {pos.symbol}: PnL={pnl:+.4f}")
+                self._daily_pnl += pnl
+                self._daily_fees += result.fees_paid
+                logger.info(f"Emergency closed {pos.symbol}: PnL={pnl:+.4f} (fees={result.fees_paid:.4f})")
 
     async def run_scheduler(self, shutdown: GracefulShutdown) -> None:
         """Background scheduler for periodic tasks."""
@@ -696,8 +933,9 @@ class TradingBot:
                         "SELECT * FROM trades WHERE status = 'CLOSED' AND exit_time >= date('now', '-1 day')"
                     ).fetchall()
                     if trades:
-                        trade_dicts = [{"id": t[0], "pnl": t[7], "fees": t[8], "side": t[2],
-                                       "regime": "RANGING", "strategy": t[9]} for t in trades]
+                        # 列索引: 7=strategy, 10=pnl, 11=fees (匹配database.py schema)
+                        trade_dicts = [{"id": t[0], "pnl": t[10], "fees": t[11], "side": t[2],
+                                       "regime": "RANGING", "strategy": t[7]} for t in trades]
                         report = m["trade_reviewer"].generate_report(trade_dicts)
                         logger.info(f"Daily review: {report.wins}W/{report.losses}L | Recommendations: {report.recommendations[:3]}")
                 except Exception as e:
@@ -707,7 +945,24 @@ class TradingBot:
             if now.hour == 0 and now.minute == 10:
                 logger.info("Running daily evolution")
                 try:
-                    # Gather data for evolution
+                    # Get yesterday's closed trades for recommendations
+                    yesterday_trades = self.db.execute(
+                        "SELECT * FROM trades WHERE status = 'CLOSED' AND exit_time >= date('now', '-1 day')"
+                    ).fetchall()
+                    trade_dicts = []
+                    for t in yesterday_trades:
+                        trade_dicts.append({
+                            "id": t[0], "pnl": t[10], "fees": t[11],
+                            "side": t[2], "regime": "RANGING", "strategy": t[7]
+                        })
+
+                    # Generate recommendations from actual data
+                    recommendations = []
+                    if trade_dicts:
+                        report = m["trade_reviewer"].generate_report(trade_dicts)
+                        recommendations = report.recommendations
+
+                    # Gather klines for evolution
                     data_feed = m["data_feed"]
                     evolution_data = {}
                     for symbol in data_feed.symbols:
@@ -718,10 +973,9 @@ class TradingBot:
                     if evolution_data:
                         report = await m["evolver"].run_daily_evolution(
                             data=evolution_data,
-                            recommendations=m["trade_reviewer"].get_recommendations([])
+                            recommendations=recommendations
                         )
                         if report:
-                            # Update strategy weights
                             m["strategy_engine"].update_weights(report.strategy_weights)
                             m["notifier"].send(
                                 "Evolution Complete",

@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 class Config:
     # Capital
     starting_capital: float = 100.0
-    capital_allocation: dict = field(default_factory=lambda: {"BTC": 0.6, "altcoins": 0.4})
 
     # Leverage
     max_leverage: int = 10
@@ -33,12 +32,6 @@ class Config:
     taker_fee: float = 0.0004
     daily_fee_budget: float = 0.005
 
-    # Evolution
-    evolution_time_utc: str = "00:00"
-    backtest_train_days: int = 30
-    backtest_test_days: int = 7
-    max_param_change_pct: float = 0.20
-
     # Compound
     kelly_fraction: float = 0.5
     profit_lock_milestones: dict = field(default_factory=lambda: {150: 20, 200: 50, 500: 150})
@@ -60,19 +53,26 @@ class Config:
     # MultiTimeframe
     mtf_min_confluence: int = 6
 
-    # Trailing stop
-    trailing_activation_pct: float = 0.015  # Activate after 1.5% profit
-    trailing_distance_pct: float = 0.008    # Trail by 0.8%
-
     # Profit protection
     profit_protect_activation_pct: float = 0.02   # Activate after 2% profit
     profit_protect_drawback_pct: float = 0.50      # Close if 50% of profit given back
 
     # System
     main_loop_interval: int = 5
-    api_latency_warn: int = 500
-    api_latency_halt: int = 2000
+    api_latency_warn: int = 3000
+    api_latency_halt: int = 8000
     dashboard_port: int = 8080
+
+    # Watchdog
+    watchdog_heartbeat_interval: int = 30
+    watchdog_frozen_threshold: int = 300
+    watchdog_max_restarts: int = 3
+    watchdog_restart_window: int = 600
+    watchdog_claude_cooldown: int = 3600
+    watchdog_daily_claude_budget: int = 3
+    watchdog_review_hour: int = 0
+    watchdog_review_minute: int = 30
+    watchdog_event_queue_max: int = 5
 
     # Credentials (loaded from .env)
     binance_api_key: str = ""

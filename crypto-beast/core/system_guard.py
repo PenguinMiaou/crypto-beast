@@ -6,7 +6,7 @@ from core.models import SystemStatus
 
 
 class SystemGuard:
-    CORE_MODULES = {"data_feed", "executor", "risk_manager", "emergency_shield"}
+    CORE_MODULES = {"data_feed", "executor", "risk_manager", "defense"}
 
     def __init__(self, latency_warn: int = 500, latency_halt: int = 2000):
         self._module_status: Dict[str, bool] = {}

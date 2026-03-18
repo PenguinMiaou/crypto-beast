@@ -1,6 +1,6 @@
 # execution/paper_executor.py
 import random
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable
 from uuid import uuid4
 
@@ -49,7 +49,7 @@ class PaperExecutor:
                 quantity,
                 plan.order.leverage,
                 signal.strategy,
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 round(fees, 6),
                 "OPEN",
                 signal.stop_loss,
@@ -111,7 +111,7 @@ class PaperExecutor:
         if trade_id:
             self.db.execute(
                 "UPDATE trades SET exit_price = ?, exit_time = ?, pnl = ?, status = ? WHERE id = ?",
-                (round(current_price, 2), datetime.utcnow().isoformat(), round(pnl, 4), "CLOSED", trade_id),
+                (round(current_price, 2), datetime.now(timezone.utc).isoformat(), round(pnl, 4), "CLOSED", trade_id),
             )
 
         logger.info(f"PAPER CLOSE {position.symbol} @ {current_price:.2f} | PnL={pnl:.4f}")

@@ -1,5 +1,5 @@
 """Streamlit dashboard for Crypto Beast monitoring."""
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 
@@ -13,7 +13,7 @@ class MonitorData:
     def update(self, state: dict) -> None:
         """Update cached system state."""
         self._system_state = state
-        self._system_state["last_update"] = datetime.utcnow().isoformat()
+        self._system_state["last_update"] = datetime.now(timezone.utc).isoformat()
 
     def get_equity_history(self) -> List[dict]:
         """Get equity snapshots from DB."""

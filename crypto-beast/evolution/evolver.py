@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import optuna
@@ -171,7 +171,7 @@ class Evolver:
 
         # Build report
         report = EvolutionReport(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             parameters_changed=best,
             backtest_sharpe_before=round(sharpe_before, 4),
             backtest_sharpe_after=round(sharpe_after, 4),

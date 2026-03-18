@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cryptobeast.watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Volumes/ORICO Media/Crypto Trading System/crypto-beast/.venv/bin/python</string>
+        <string>/Volumes/ORICO Media/Crypto Trading System/crypto-beast/crypto_guardian.py</string>
+        <string>live</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Volumes/ORICO Media/Crypto Trading System/crypto-beast</string>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Volumes/ORICO Media/Crypto Trading System/crypto-beast/logs/watchdog_launchd.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Volumes/ORICO Media/Crypto Trading System/crypto-beast/logs/watchdog_launchd.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Volumes/ORICO Media/Crypto Trading System/crypto-beast/.venv/bin</string>
+    </dict>
+</dict>
+</plist>

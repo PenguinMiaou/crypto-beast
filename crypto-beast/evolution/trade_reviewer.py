@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from collections import Counter
 
@@ -140,7 +140,7 @@ class TradeReviewer:
 
         return ReviewReport(
             period=period,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             total_trades=len(trades),
             wins=len(wins),
             losses=len(losses),

@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crypto Beast v1.0 — 完整策略流程详解</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@300;400;500;700&display=swap');
+
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface-2: #232734;
+    --border: #2e3345;
+    --text: #e4e7ef;
+    --text-dim: #8b90a0;
+    --accent: #6c5ce7;
+    --accent-light: #a29bfe;
+    --green: #00cec9;
+    --red: #ff6b6b;
+    --orange: #fdcb6e;
+    --blue: #74b9ff;
+  }
+
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.8;
+    font-size: 14px;
+    padding: 0;
+  }
+
+  .container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 40px 50px;
+  }
+
+  /* Title */
+  h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: #fff;
+    text-align: center;
+    padding: 30px 0;
+    margin-bottom: 30px;
+    background: linear-gradient(135deg, var(--accent), var(--blue));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    border-bottom: 2px solid var(--accent);
+  }
+
+  h2 {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--accent-light);
+    margin-top: 40px;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--green);
+    margin-top: 24px;
+    margin-bottom: 12px;
+  }
+
+  p {
+    margin-bottom: 12px;
+    color: var(--text);
+  }
+
+  strong {
+    color: var(--orange);
+    font-weight: 600;
+  }
+
+  /* Table of Contents */
+  ol {
+    padding-left: 24px;
+    margin-bottom: 16px;
+  }
+
+  ol li {
+    margin-bottom: 4px;
+  }
+
+  ul {
+    padding-left: 24px;
+    margin-bottom: 16px;
+  }
+
+  li {
+    margin-bottom: 4px;
+  }
+
+  a {
+    color: var(--blue);
+    text-decoration: none;
+  }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 13px;
+    background: var(--surface);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  thead {
+    background: linear-gradient(135deg, var(--accent), #5f27cd);
+  }
+
+  thead th {
+    color: #fff;
+    font-weight: 600;
+    text-align: left;
+    padding: 10px 14px;
+    font-size: 13px;
+  }
+
+  tbody td {
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  tbody tr:nth-child(even) {
+    background: var(--surface-2);
+  }
+
+  /* Code blocks */
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  code {
+    font-family: 'JetBrains Mono', 'Menlo', monospace;
+    font-size: 13px;
+    color: var(--green);
+  }
+
+  pre code {
+    color: var(--text);
+    background: none;
+    padding: 0;
+  }
+
+  /* Inline code */
+  p code, li code, td code {
+    background: var(--surface-2);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+
+  /* Horizontal rule */
+  hr {
+    border: none;
+    height: 1px;
+    background: linear-gradient(to right, transparent, var(--accent), transparent);
+    margin: 32px 0;
+  }
+
+  /* Print styles */
+  @media print {
+    body {
+      background: #fff;
+      color: #1a1a2e;
+      font-size: 11pt;
+      padding: 0;
+    }
+
+    .container {
+      max-width: 100%;
+      padding: 0;
+    }
+
+    h1 {
+      background: none;
+      -webkit-text-fill-color: #1a1a2e;
+      color: #1a1a2e;
+      font-size: 22pt;
+      border-bottom: 3px solid #6c5ce7;
+    }
+
+    h2 {
+      color: #6c5ce7;
+      font-size: 16pt;
+      border-bottom: 1px solid #ddd;
+      page-break-after: avoid;
+    }
+
+    h3 {
+      color: #00896f;
+      font-size: 13pt;
+      page-break-after: avoid;
+    }
+
+    strong {
+      color: #c0392b;
+    }
+
+    table {
+      background: #fff;
+      border: 1px solid #ddd;
+    }
+
+    thead {
+      background: #6c5ce7;
+    }
+
+    thead th {
+      color: #fff;
+    }
+
+    tbody td {
+      color: #333;
+      border-bottom: 1px solid #eee;
+    }
+
+    tbody tr:nth-child(even) {
+      background: #f8f9fa;
+    }
+
+    pre {
+      background: #f5f5f5;
+      border: 1px solid #ddd;
+      page-break-inside: avoid;
+    }
+
+    code {
+      color: #00896f;
+    }
+
+    pre code {
+      color: #333;
+    }
+
+    hr {
+      background: #ddd;
+    }
+
+    a {
+      color: #6c5ce7;
+    }
+  }
+
+  /* Page break hints for print */
+  h2 {
+    page-break-before: auto;
+  }
+
+  table, pre {
+    page-break-inside: avoid;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+<h1 id="crypto-beast-v10">Crypto Beast v1.0 — 完整策略流程详解</h1>
+<h2 id="_1">目录</h2>
+<ol>
+<li><a href="#1-系统总览">系统总览</a></li>
+<li><a href="#2-交易循环流程">交易循环流程</a></li>
+<li><a href="#3-市场分析体系">市场分析体系</a></li>
+<li><a href="#4-六大交易策略">六大交易策略</a></li>
+<li><a href="#5-数据情报模块">数据情报模块</a></li>
+<li><a href="#6-风控防御体系">风控防御体系</a></li>
+<li><a href="#7-执行与仓位管理">执行与仓位管理</a></li>
+<li><a href="#8-紧急保护与回撤恢复">紧急保护与回撤恢复</a></li>
+<li><a href="#9-自我进化系统">自我进化系统</a></li>
+<li><a href="#10-定时任务调度">定时任务调度</a></li>
+<li><a href="#11-完整交易示例">完整交易示例</a></li>
+<li><a href="#12-核心参数一览表">核心参数一览表</a></li>
+</ol>
+<hr />
+<h2 id="1">1. 系统总览</h2>
+<p>Crypto Beast 是一个 7 层架构、33 个模块的全自动加密货币合约交易系统，运行在 Binance USDT-M 永续合约上。</p>
+<p><strong>交易币种：</strong> BTC、ETH、SOL（+ 每日自动选出的最多 3 个山寨币）
+<strong>运行频率：</strong> 每 5 秒一个交易循环
+<strong>杠杆范围：</strong> 3x-10x（根据信号置信度动态调整）
+<strong>最大同时持仓：</strong> 3 个</p>
+<hr />
+<h2 id="2">2. 交易循环流程</h2>
+<p>每 5 秒执行一次完整的交易决策流程：</p>
+<div class="codehilite"><pre><span></span><code>① 获取行情数据（5分钟/15分钟/1小时/4小时 K线）
+    ↓
+② 系统健康检查（API延迟 &gt; 5秒则暂停交易）
+    ↓
+③ 计算真实权益（初始资金 + 已平仓盈亏 + 未实现盈亏）
+    ↓
+④ 紧急盾牌检查（总回撤 ≥ 30% → 全部平仓；日亏 ≥ 10% → 暂停24小时）
+    ↓
+⑤ 回撤等级评估（调整最大杠杆和最低置信度要求）
+    ↓
+⑥ 资金费率检查（结算前15分钟不开新仓）
+    ↓
+⑦ 喂数据给情报模块（鲸鱼追踪、清算检测、深度分析）
+    ↓
+⑧ 更新多时间框架共振评分
+    ↓
+⑨ 生成交易信号（6个策略 + 图形识别）
+    ↓
+⑩ 信号过滤（反陷阱检测 → 回撤等级过滤 → 风控验证 → 手续费预算）
+    ↓
+⑪ 执行交易（SmartOrder规划 → 下单到Binance → 挂止损止盈单）
+    ↓
+⑫ 持仓监控（检查止损/止盈/盈利保护是否触发）
+    ↓
+⑬ 更新仪表板和Telegram通知
+</code></pre></div>
+
+<hr />
+<h2 id="3">3. 市场分析体系</h2>
+<h3 id="31">3.1 市场状态识别</h3>
+<p>系统将市场分为 5 种状态，不同状态下策略权重不同：</p>
+<table>
+<thead>
+<tr>
+<th>状态</th>
+<th>判定条件</th>
+<th>适合的策略</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>上升趋势</strong></td>
+<td>ADX &gt; 25 且 EMA20 &gt; EMA50</td>
+<td>趋势跟踪、动量</td>
+</tr>
+<tr>
+<td><strong>下降趋势</strong></td>
+<td>ADX &gt; 25 且 EMA20 &lt; EMA50</td>
+<td>趋势跟踪（做空）、动量</td>
+</tr>
+<tr>
+<td><strong>震荡</strong></td>
+<td>ADX &lt; 20</td>
+<td>均值回归、scalper</td>
+</tr>
+<tr>
+<td><strong>高波动</strong></td>
+<td>BB宽度 &gt; 90百分位</td>
+<td>突破</td>
+</tr>
+<tr>
+<td><strong>低波动</strong></td>
+<td>BB宽度 &lt; 10百分位</td>
+<td>突破（等待挤压后爆发）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="32">3.2 多时间框架共振</h3>
+<p>同时分析 4 个时间框架，用加权投票决定方向：</p>
+<table>
+<thead>
+<tr>
+<th>时间框架</th>
+<th>权重</th>
+<th>投票规则</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4小时</td>
+<td>4 票</td>
+<td>EMA9 &gt; EMA21 → 看多(+1)，否则看空(-1)</td>
+</tr>
+<tr>
+<td>1小时</td>
+<td>3 票</td>
+<td>同上</td>
+</tr>
+<tr>
+<td>15分钟</td>
+<td>2 票</td>
+<td>同上</td>
+</tr>
+<tr>
+<td>5分钟</td>
+<td>1 票</td>
+<td>同上</td>
+</tr>
+</tbody>
+</table>
+<p><strong>总分范围：</strong> -10 到 +10
+<strong>交易门槛：</strong> |总分| ≥ 6 才允许交易（确保多个时间框架方向一致）</p>
+<h3 id="33">3.3 交易时段权重</h3>
+<p>不同时段对策略施加不同的权重倍数：</p>
+<table>
+<thead>
+<tr>
+<th>时段 (UTC)</th>
+<th>趋势跟踪</th>
+<th>动量</th>
+<th>突破</th>
+<th>均值回归</th>
+<th>Scalper</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>亚洲 (0-8)</td>
+<td>0.8x</td>
+<td>0.7x</td>
+<td>0.6x</td>
+<td><strong>1.3x</strong></td>
+<td><strong>1.2x</strong></td>
+</tr>
+<tr>
+<td>欧洲 (8-13)</td>
+<td>1.0x</td>
+<td>1.0x</td>
+<td>1.0x</td>
+<td>1.0x</td>
+<td>1.0x</td>
+</tr>
+<tr>
+<td>欧美重叠 (13-17)</td>
+<td><strong>1.2x</strong></td>
+<td><strong>1.3x</strong></td>
+<td><strong>1.2x</strong></td>
+<td>0.7x</td>
+<td>1.0x</td>
+</tr>
+<tr>
+<td>美国 (17-21)</td>
+<td>1.1x</td>
+<td>1.1x</td>
+<td>1.0x</td>
+<td>0.9x</td>
+<td>0.9x</td>
+</tr>
+<tr>
+<td>休市 (21-24)</td>
+<td>0.7x</td>
+<td>0.6x</td>
+<td>0.5x</td>
+<td><strong>1.2x</strong></td>
+<td><strong>1.3x</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>含义：</strong> 亚洲时段波动小，适合均值回归；欧美重叠时段波动大，适合趋势和动量策略。</p>
+<hr />
+<h2 id="4">4. 六大交易策略</h2>
+<h3 id="41-trendfollower">4.1 趋势跟踪 (TrendFollower)</h3>
+<p><strong>核心逻辑：</strong> EMA 快慢线交叉判断趋势方向</p>
+<p><strong>做多条件：</strong> 9日EMA &gt; 21日EMA
+<strong>做空条件：</strong> 9日EMA &lt; 21日EMA</p>
+<p><strong>置信度计算：</strong>
+- 基础置信度 = 50% + EMA差距百分比 × 100（上限90%）
+- 如果市场处于同方向趋势：+10%
+- 如果市场震荡或反向趋势：× 0.6</p>
+<p><strong>止损：</strong> 入场价 - ATR × 1.5
+<strong>止盈：</strong> 入场价 + ATR × 3.0（盈亏比 1:2）</p>
+<h3 id="42-meanreversion">4.2 均值回归 (MeanReversion)</h3>
+<p><strong>核心逻辑：</strong> 价格偏离布林带且 RSI 超买/超卖时逆势交易</p>
+<p><strong>做多条件：</strong> 价格 &lt; 布林带下轨 且 RSI &lt; 30（超卖）
+<strong>做空条件：</strong> 价格 &gt; 布林带上轨 且 RSI &gt; 70（超买）</p>
+<p><strong>置信度：</strong> 基础 60%，震荡市 +10%，趋势市 -20%</p>
+<p><strong>止损：</strong> 下轨 - 布林带宽度 × 0.5
+<strong>止盈：</strong> 布林带中轨（回归均值）</p>
+<h3 id="43-momentum">4.3 动量策略 (Momentum)</h3>
+<p><strong>核心逻辑：</strong> MACD 柱状图加速 + 价格在 EMA20 正确一侧</p>
+<p><strong>做多条件：</strong> MACD柱 &gt; 0 且 连续3根递增 且 价格 &gt; EMA20
+<strong>做空条件：</strong> MACD柱 &lt; 0 且 连续3根递减 且 价格 &lt; EMA20</p>
+<p><strong>置信度：</strong>
+- 基础 55%
+- 成交量 &gt; 均量的1.2倍：+15%
+- 市场顺势趋势：+10%</p>
+<p><strong>止损/止盈：</strong> ATR × 1.5 / ATR × 3.0</p>
+<h3 id="44-breakout">4.4 突破策略 (Breakout)</h3>
+<p><strong>核心逻辑：</strong> 布林带挤压后，价格带量突破</p>
+<p><strong>入场条件：</strong>
+1. 布林带宽度处于近120根K线的20百分位以下（挤压状态）
+2. 价格突破上轨（做多）或下轨（做空）
+3. 成交量 &gt; 均量的1.5倍</p>
+<p><strong>置信度：</strong> 基础 60%，成交量 &gt; 2倍均量则 +10%</p>
+<p><strong>止损：</strong> 对侧布林带
+<strong>止盈：</strong> 突破方向延伸一个布林带宽度</p>
+<h3 id="45-scalper">4.5 极速策略 (Scalper)</h3>
+<p><strong>核心逻辑：</strong> RSI(2) 极值反转，超短线</p>
+<p><strong>做多条件：</strong> RSI(2) &lt; 10（极度超卖）
+<strong>做空条件：</strong> RSI(2) &gt; 90（极度超买）</p>
+<p><strong>置信度：</strong> 基础 50%，震荡市 +10%</p>
+<p><strong>止损：</strong> ATR × 0.5（非常紧）
+<strong>止盈：</strong> ATR × 1.0</p>
+<h3 id="46-fundingratearb">4.6 资金费率套利 (FundingRateArb)</h3>
+<p><strong>核心逻辑：</strong> 当资金费率极端时，做反向收取费率</p>
+<p><strong>做空条件：</strong> 资金费率 &gt; 0.1%（做多方付费太多 → 做空收费）
+<strong>做多条件：</strong> 资金费率 &lt; -0.1%（做空方付费太多 → 做多收费）</p>
+<p><strong>置信度：</strong> 40% + (|费率| - 0.1%) × 100，上限 70%</p>
+<h3 id="47-patternscanner">4.7 图形识别 (PatternScanner)</h3>
+<p><strong>双底（W形态）：</strong>
+- 两个低点在 2% 范围内
+- 价格接近颈线
+- 置信度 65%
+- 止盈 = 颈线 + (颈线 - 低点)</p>
+<p><strong>双顶（M形态）：</strong>
+- 两个高点在 2% 范围内
+- 价格接近颈线
+- 置信度 65%
+- 止盈 = 颈线 - (高点 - 颈线)</p>
+<hr />
+<h2 id="5">5. 数据情报模块</h2>
+<h3 id="51">5.1 鲸鱼追踪</h3>
+<p><strong>监控内容：</strong> 名义价值 &gt; $100,000 的大单交易
+<strong>时间窗口：</strong> 最近 15 分钟
+<strong>信号逻辑：</strong>
+- 大单买入占比 &gt; 60% → 看多（置信度 30%-70%）
+- 大单卖出占比 &gt; 60% → 看空</p>
+<h3 id="52">5.2 情绪雷达</h3>
+<p><strong>数据源：</strong> Fear &amp; Greed 指数（每5分钟更新）+ Binance 多空比</p>
+<p><strong>反向逻辑（逆市场情绪）：</strong>
+- Fear &amp; Greed &lt; 20（极度恐惧）→ 看多买入
+- Fear &amp; Greed &gt; 80（极度贪婪）→ 看空卖出
+- 多空比 &gt; 2.0（太多人做多）→ 看空
+- 多空比 &lt; 0.5（太多人做空）→ 看多</p>
+<p><strong>权重：</strong> 恐贪指数 60% + 多空比 40%</p>
+<h3 id="53">5.3 清算猎人</h3>
+<p><strong>检测方式：</strong> 当5分钟内的成交量突增（&gt; 均量 2 倍），判定为清算级联</p>
+<p><strong>信号逻辑：</strong> 大量多头被清算后 → 做多（清算耗尽卖压），反之亦然</p>
+<h3 id="54">5.4 深度分析</h3>
+<p><strong>买卖盘比例：</strong> 前20档买单量 / 前20档卖单量
+- 比例 ≥ 1.5 → 看多（买盘强）
+- 比例 ≤ 0.67 → 看空（卖盘强）
+- 还会检测大额挂单（超均值5倍的"墙"）</p>
+<hr />
+<h2 id="6">6. 风控防御体系</h2>
+<h3 id="61">6.1 信号过滤 — 反陷阱检测</h3>
+<p>每个信号在执行前，都要通过 3 项反陷阱检测：</p>
+<table>
+<thead>
+<tr>
+<th>检测项</th>
+<th>判定条件</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>针线形态</strong></td>
+<td>影线长度 &gt; 实体 × 2.5</td>
+<td>可能是诱多/诱空</td>
+</tr>
+<tr>
+<td><strong>量价背离</strong></td>
+<td>价格朝信号方向走，但成交量连续3根递减</td>
+<td>动能不足</td>
+</tr>
+<tr>
+<td><strong>暴拉检测</strong></td>
+<td>单根K线涨/跌幅 &gt; 3%</td>
+<td>可能是操纵</td>
+</tr>
+</tbody>
+</table>
+<p>任何一项触发 → 信号被过滤，不执行。</p>
+<h3 id="62">6.2 仓位大小计算</h3>
+<div class="codehilite"><pre><span></span><code>第一步：计算可用资金
+  可用资金 = 总权益 - 已占用保证金
+  每仓分配 = max(最低名义价值需求, 可用资金 / 剩余仓位数)
+  上限 = min(可用资金 × 95%, 总权益 × 50%)
+
+第二步：根据风险计算数量
+  每笔风险金额 = 分配资金 × 2%
+  交易数量 = 风险金额 / |入场价 - 止损价|
+
+第三步：检查最低名义价值
+  BTC最低: $100
+  其他币最低: $20
+  如果 数量 × 价格 &lt; 最低值 → 增加数量到最低值
+
+第四步：检查保证金是否充足
+</code></pre></div>
+
+<h3 id="63">6.3 杠杆分配</h3>
+<table>
+<thead>
+<tr>
+<th>信号置信度</th>
+<th>杠杆</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>≥ 80%</td>
+<td>10x</td>
+</tr>
+<tr>
+<td>50%-80%</td>
+<td>5x</td>
+</tr>
+<tr>
+<td>&lt; 50%</td>
+<td>3x</td>
+</tr>
+</tbody>
+</table>
+<h3 id="64">6.4 相关性惩罚</h3>
+<p>如果已持有 BTC 多头，再想开 ETH 多头 → 新信号置信度 × 0.8（降低20%）</p>
+<p>相关性映射：BTC ↔ ETH ↔ SOL（同方向持仓互相惩罚）</p>
+<h3 id="65">6.5 手续费优化</h3>
+<table>
+<thead>
+<tr>
+<th>条件</th>
+<th>订单类型</th>
+<th>手续费</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>紧急度 &gt; 70% 或 置信度 &gt; 80%</td>
+<td>市价单</td>
+<td>0.04%</td>
+</tr>
+<tr>
+<td>其他情况</td>
+<td>限价单</td>
+<td>0.02%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>每日手续费预算：</strong> $5 USDT，超过则拒绝新交易</p>
+<hr />
+<h2 id="7">7. 执行与仓位管理</h2>
+<h3 id="71">7.1 入场方式</h3>
+<p><strong>小账户 (&lt; $500)：</strong> 单笔市价单直接入场
+<strong>大账户 (≥ $500)：</strong> DCA分批入场（默认3笔，间距0.1%）</p>
+<h3 id="72">7.2 止损止盈</h3>
+<p><strong>交易所级别（Binance Algo Order）：</strong>
+- 开仓后立即在 Binance 挂 STOP_MARKET（止损）和 TAKE_PROFIT_MARKET（止盈）
+- 即使 bot 崩溃，止损单仍在交易所生效</p>
+<p><strong>软件级别（PositionManager 每5秒检查）：</strong>
+- 作为交易所止损的补充
+- 同时负责盈利保护逻辑</p>
+<h3 id="73">7.3 盈利保护机制</h3>
+<div class="codehilite"><pre><span></span><code>当盈利达到 2% 时 → 激活保护
+系统持续追踪最高盈利点
+当盈利从峰值回吐 50% 时 → 立即平仓锁利
+
+示例：
+  入场 $100
+  涨到 $104（+4%，峰值记录）  ← 保护已激活
+  回落到 $102（盈利剩+2%，回吐了50%）  ← 触发平仓，锁利 $2
+</code></pre></div>
+
+<hr />
+<h2 id="8">8. 紧急保护与回撤恢复</h2>
+<h3 id="81">8.1 紧急盾牌</h3>
+<table>
+<thead>
+<tr>
+<th>触发条件</th>
+<th>动作</th>
+<th>恢复方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>总回撤 ≥ 30%</td>
+<td>立即全部平仓</td>
+<td>需手动重置</td>
+</tr>
+<tr>
+<td>日亏 ≥ 10%</td>
+<td>暂停交易</td>
+<td>24小时后自动恢复</td>
+</tr>
+</tbody>
+</table>
+<h3 id="82">8.2 回撤恢复模式</h3>
+<p>随着回撤加深，系统逐级收紧交易条件：</p>
+<table>
+<thead>
+<tr>
+<th>回撤程度</th>
+<th>状态</th>
+<th>最大杠杆</th>
+<th>最低置信度</th>
+<th>多时间框架要求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&lt; 5%</td>
+<td>正常</td>
+<td>10x</td>
+<td>50%</td>
+<td>6分</td>
+</tr>
+<tr>
+<td>5%-10%</td>
+<td>谨慎</td>
+<td>3x</td>
+<td>75%</td>
+<td>7分</td>
+</tr>
+<tr>
+<td>10%-20%</td>
+<td>恢复</td>
+<td>2x</td>
+<td>80%</td>
+<td>8分</td>
+</tr>
+<tr>
+<td>≥ 20%</td>
+<td>危急</td>
+<td>1x</td>
+<td>90%</td>
+<td>9分</td>
+</tr>
+</tbody>
+</table>
+<p><strong>含义：</strong> 亏损越多，系统越保守 — 降杠杆、只接受高置信度信号、要求更强的多时间框架共振。</p>
+<hr />
+<h2 id="9">9. 自我进化系统</h2>
+<h3 id="91-0010-utc">9.1 每日参数优化（00:10 UTC）</h3>
+<p><strong>Optuna 贝叶斯优化：</strong>
+- 对趋势跟踪策略运行 30 次试验
+- 优化参数：快慢EMA周期、ATR止损/止盈倍数
+- 适应度函数：夏普比率 × √交易次数（同时追求质量和频率）</p>
+<h3 id="92">9.2 策略权重调整</h3>
+<p>每日根据各策略的夏普比率重新分配权重，表现好的策略获得更高权重。</p>
+<h3 id="93-kelly">9.3 Kelly 准则仓位管理</h3>
+<p>根据历史胜率和盈亏比，计算最优仓位大小：
+- 使用半 Kelly（50%凯利值），更保守
+- 最低 1%，最高 20%</p>
+<h3 id="94">9.4 利润锁定里程碑</h3>
+<table>
+<thead>
+<tr>
+<th>权益达到</th>
+<th>锁定金额</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$150</td>
+<td>$20</td>
+<td>至少保留 $20 不投入交易</td>
+</tr>
+<tr>
+<td>$200</td>
+<td>$50</td>
+<td>至少保留 $50</td>
+</tr>
+<tr>
+<td>$500</td>
+<td>$150</td>
+<td>至少保留 $150</td>
+</tr>
+</tbody>
+</table>
+<h3 id="95">9.5 交易复盘</h3>
+<p><strong>亏损分类（8类）：</strong>
+1. 止损太紧 — 价格触发止损后反转
+2. 逆势交易 — 在下跌趋势中做多
+3. 假信号 — 信号本身不可靠
+4. 时机不对 — 入场时机差
+5. 时段不匹配 — 在不适合的时段交易
+6. 手续费侵蚀 — 毛利为正但净利为负
+7. 相关性亏损 — 多个相关持仓同时亏损
+8. 事件冲击 — 突发事件导致</p>
+<p><strong>盈利分析：</strong> 计算每笔盈利交易的"捕获效率"（实际获利 / 潜在最大获利）</p>
+<hr />
+<h2 id="10">10. 定时任务调度</h2>
+<table>
+<thead>
+<tr>
+<th>时间 (UTC)</th>
+<th>任务</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>00:00</td>
+<td>重置日计数器</td>
+<td>日亏损、日手续费清零</td>
+</tr>
+<tr>
+<td>00:05</td>
+<td>每日交易复盘</td>
+<td>分析当日已平仓交易，生成建议</td>
+</tr>
+<tr>
+<td>00:10</td>
+<td>每日进化优化</td>
+<td>Optuna 优化策略参数，调整权重</td>
+</tr>
+<tr>
+<td>00:15</td>
+<td>山寨币扫描</td>
+<td>评估所有 USDT 交易对，选出前3名</td>
+</tr>
+<tr>
+<td>00:30</td>
+<td>数据库备份</td>
+<td>备份到 backups/ 目录</td>
+</tr>
+<tr>
+<td>每整点</td>
+<td>权益快照</td>
+<td>记录当前权益到数据库</td>
+</tr>
+<tr>
+<td>每整点</td>
+<td>K线持久化</td>
+<td>保存缓存的K线数据到数据库</td>
+</tr>
+<tr>
+<td>每5分钟</td>
+<td>情绪更新</td>
+<td>获取 Fear &amp; Greed 指数 + 多空比</td>
+</tr>
+<tr>
+<td>每30分钟</td>
+<td>费率更新</td>
+<td>获取各币种当前资金费率</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="11">11. 完整交易示例</h2>
+<h3 id="_2">开仓流程</h3>
+<div class="codehilite"><pre><span></span><code>场景：2026年3月15日 15:00 UTC（欧美重叠时段）
+
+① 趋势跟踪策略检测到 BTC 的 EMA9 穿越 EMA21 向上
+   <span class="k">-</span> 基础置信度：62%
+
+② 时段权重：欧美重叠 → 趋势跟踪 × 1.2
+   <span class="k">-</span> 调整后置信度：62% × 1.2 = 74.4%
+
+③ 多时间框架共振：4h看多(+4), 1h看多(+3), 15m看多(+2), 5m看空(-1) = +8分
+   <span class="k">-</span> 通过（≥ 6分）
+
+④ 反陷阱检测：无针线、无量价背离、无暴拉 → 通过
+
+⑤ 风控验证：
+   <span class="k">-</span> 置信度 74.4% ≥ 50% → 杠杆 5x
+   <span class="k">-</span> 当前 1 个持仓 &lt; 3 个上限 → 通过
+   <span class="k">-</span> 计算仓位：风险金额 $2 / 止损距离 → 数量 0.003 BTC
+   <span class="k">-</span> 名义价值 $215 &gt; BTC最低$100 → 通过
+   <span class="k">-</span> 保证金 $43 &lt; 可用 $80 → 通过
+
+⑥ 执行：
+   <span class="k">-</span> 市价买入 0.003 BTC @ $71,500
+   <span class="k">-</span> 挂止损单 @ $70,263（-2%）
+   <span class="k">-</span> 挂止盈单 @ $73,848（+3%）
+
+⑦ Telegram 通知：
+   &quot;Trade Opened: LONG BTCUSDT @ $71,500 | qty=0.003 | 5x | trend_follower&quot;
+</code></pre></div>
+
+<h3 id="_3">平仓流程</h3>
+<div class="codehilite"><pre><span></span><code>场景：BTC 从 $71,500 涨到 $73,200 后开始回落
+
+① 盈利保护追踪：
+   <span class="k">-</span> 入场 $71,500
+   <span class="k">-</span> 最高到 $73,200（+2.38%，超过2%激活门槛）
+   <span class="k">-</span> 保护激活，记录峰值盈利 = +2.38%
+
+② 价格回落到 $72,400：
+   <span class="k">-</span> 当前盈利 = +1.26%
+   <span class="k">-</span> 回吐比例 = (2.38% - 1.26%) / 2.38% = 47%
+   <span class="k">-</span> 未达50%，继续持有
+
+③ 价格继续跌到 $72,200：
+   <span class="k">-</span> 当前盈利 = +0.98%
+   <span class="k">-</span> 回吐比例 = (2.38% - 0.98%) / 2.38% = 59% → 超过50%！
+   <span class="k">-</span> 触发盈利保护平仓
+
+④ 结果：
+   <span class="k">-</span> 入场 $71,500 → 出场 $72,200
+   <span class="k">-</span> 盈利 = ($72,200 - $71,500) × 0.003 × 5 = $10.50
+   <span class="k">-</span> 手续费 ≈ $0.43
+   <span class="k">-</span> 净利 ≈ $10.07
+
+⑤ Telegram 通知：
+   &quot;Trade Closed (PROFIT_PROTECT): LONG BTCUSDT | $71,500 → $72,200 | PnL=+$10.07&quot;
+</code></pre></div>
+
+<hr />
+<h2 id="12">12. 核心参数一览表</h2>
+<table>
+<thead>
+<tr>
+<th>分类</th>
+<th>参数</th>
+<th>默认值</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>资金</strong></td>
+<td>起始资金</td>
+<td>$100</td>
+<td>初始投入</td>
+</tr>
+<tr>
+<td><strong>资金</strong></td>
+<td>最大同时持仓</td>
+<td>3</td>
+<td>分散风险</td>
+</tr>
+<tr>
+<td><strong>资金</strong></td>
+<td>每笔风险</td>
+<td>2%</td>
+<td>单笔最大亏损</td>
+</tr>
+<tr>
+<td><strong>杠杆</strong></td>
+<td>高置信度</td>
+<td>10x</td>
+<td>置信度 ≥ 80%</td>
+</tr>
+<tr>
+<td><strong>杠杆</strong></td>
+<td>中置信度</td>
+<td>5x</td>
+<td>置信度 50%-80%</td>
+</tr>
+<tr>
+<td><strong>杠杆</strong></td>
+<td>低置信度</td>
+<td>3x</td>
+<td>置信度 &lt; 50%</td>
+</tr>
+<tr>
+<td><strong>止损</strong></td>
+<td>默认止损</td>
+<td>入场价 -2%</td>
+<td>单笔止损</td>
+</tr>
+<tr>
+<td><strong>止盈</strong></td>
+<td>默认止盈</td>
+<td>入场价 +3%</td>
+<td>单笔止盈</td>
+</tr>
+<tr>
+<td><strong>盈利保护</strong></td>
+<td>激活门槛</td>
+<td>2%</td>
+<td>盈利达此比例开始追踪</td>
+</tr>
+<tr>
+<td><strong>盈利保护</strong></td>
+<td>回吐触发</td>
+<td>50%</td>
+<td>从峰值回吐此比例则平仓</td>
+</tr>
+<tr>
+<td><strong>紧急</strong></td>
+<td>日亏上限</td>
+<td>10%</td>
+<td>超过则暂停24小时</td>
+</tr>
+<tr>
+<td><strong>紧急</strong></td>
+<td>总回撤上限</td>
+<td>30%</td>
+<td>超过则全部平仓</td>
+</tr>
+<tr>
+<td><strong>手续费</strong></td>
+<td>Maker</td>
+<td>0.02%</td>
+<td>限价单</td>
+</tr>
+<tr>
+<td><strong>手续费</strong></td>
+<td>Taker</td>
+<td>0.04%</td>
+<td>市价单</td>
+</tr>
+<tr>
+<td><strong>手续费</strong></td>
+<td>日预算</td>
+<td>$5</td>
+<td>每日手续费上限</td>
+</tr>
+<tr>
+<td><strong>鲸鱼</strong></td>
+<td>大单门槛</td>
+<td>$100,000</td>
+<td>视为鲸鱼交易</td>
+</tr>
+<tr>
+<td><strong>情绪</strong></td>
+<td>恐惧门槛</td>
+<td>≤ 20</td>
+<td>极度恐惧(反向做多)</td>
+</tr>
+<tr>
+<td><strong>情绪</strong></td>
+<td>贪婪门槛</td>
+<td>≥ 80</td>
+<td>极度贪婪(反向做空)</td>
+</tr>
+<tr>
+<td><strong>费率</strong></td>
+<td>极端门槛</td>
+<td>0.1%/8h</td>
+<td>触发费率套利</td>
+</tr>
+<tr>
+<td><strong>共振</strong></td>
+<td>最低分数</td>
+<td>6/10</td>
+<td>多时间框架共振要求</td>
+</tr>
+<tr>
+<td><strong>进化</strong></td>
+<td>优化频率</td>
+<td>每日00:10 UTC</td>
+<td>Optuna参数优化</td>
+</tr>
+<tr>
+<td><strong>进化</strong></td>
+<td>优化次数</td>
+<td>30 trials</td>
+<td>每次优化的试验数</td>
+</tr>
+<tr>
+<td><strong>循环</strong></td>
+<td>间隔</td>
+<td>5 秒</td>
+<td>主循环频率</td>
+</tr>
+<tr>
+<td><strong>API</strong></td>
+<td>延迟警告</td>
+<td>500ms</td>
+<td>日志警告</td>
+</tr>
+<tr>
+<td><strong>API</strong></td>
+<td>延迟停机</td>
+<td>5000ms</td>
+<td>暂停交易</td>
+</tr>
+</tbody>
+</table>
+</div>
+</body>
+</html>

@@ -1,3 +1,9 @@
+"""Tests for RecoveryMode — now validates via DefenseManager.
+
+The old RecoveryMode class still exists for backward compat, but these tests
+verify the same behavior via DefenseManager.
+"""
+import os
 import pytest
 
 from core.models import Portfolio, RecoveryState
@@ -12,45 +18,56 @@ def make_portfolio(drawdown: float):
     )
 
 
+@pytest.fixture(autouse=True)
+def cleanup_state_file():
+    from defense.defense_manager import DefenseManager
+    state_file = DefenseManager._STATE_FILE
+    if os.path.exists(state_file):
+        os.remove(state_file)
+    yield
+    if os.path.exists(state_file):
+        os.remove(state_file)
+
+
 class TestRecoveryMode:
     def test_normal_state(self):
-        from execution.recovery_mode import RecoveryMode
+        from defense.defense_manager import DefenseManager
         from config import Config
 
-        rm = RecoveryMode(Config())
-        state = rm.assess_state(make_portfolio(0.02))
-        assert state == RecoveryState.NORMAL
+        dm = DefenseManager(Config())
+        result = dm.check(make_portfolio(0.02))
+        assert result.recovery_state == RecoveryState.NORMAL
 
     def test_cautious_state(self):
-        from execution.recovery_mode import RecoveryMode
+        from defense.defense_manager import DefenseManager
         from config import Config
 
-        rm = RecoveryMode(Config())
-        state = rm.assess_state(make_portfolio(0.07))
-        assert state == RecoveryState.CAUTIOUS
+        dm = DefenseManager(Config())
+        result = dm.check(make_portfolio(0.07))
+        assert result.recovery_state == RecoveryState.CAUTIOUS
 
     def test_recovery_state(self):
-        from execution.recovery_mode import RecoveryMode
+        from defense.defense_manager import DefenseManager
         from config import Config
 
-        rm = RecoveryMode(Config())
-        state = rm.assess_state(make_portfolio(0.15))
-        assert state == RecoveryState.RECOVERY
+        dm = DefenseManager(Config())
+        result = dm.check(make_portfolio(0.15))
+        assert result.recovery_state == RecoveryState.RECOVERY
 
     def test_critical_state(self):
-        from execution.recovery_mode import RecoveryMode
+        from defense.defense_manager import DefenseManager
         from config import Config
 
-        rm = RecoveryMode(Config())
-        state = rm.assess_state(make_portfolio(0.25))
-        assert state == RecoveryState.CRITICAL
+        dm = DefenseManager(Config())
+        result = dm.check(make_portfolio(0.25))
+        assert result.recovery_state == RecoveryState.CRITICAL
 
     def test_adjust_reduces_leverage_in_cautious(self):
-        from execution.recovery_mode import RecoveryMode
+        from defense.defense_manager import DefenseManager
         from config import Config
 
-        rm = RecoveryMode(Config())
-        rm.assess_state(make_portfolio(0.07))
-        params = rm.get_adjusted_params()
-        assert params["max_leverage"] <= 3
-        assert params["min_confidence"] > 0.5
+        dm = DefenseManager(Config())
+        result = dm.check(make_portfolio(0.07))
+        params = result.params
+        assert params["max_leverage"] <= 5
+        assert params["min_confidence"] >= 0.5

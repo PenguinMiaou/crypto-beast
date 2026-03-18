@@ -84,7 +84,7 @@ class MockExchange:
             }
         ]
 
-    async def cancel_all_orders(self) -> None:
+    async def cancel_all_orders(self, symbol: str = None) -> None:
         self.cancel_called = True
 
 

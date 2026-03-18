@@ -171,16 +171,29 @@ class LiveExecutor:
         exit_ids = await self._place_exit_orders(signal, plan, total_filled, position_side)
         order_ids.extend(exit_ids)
 
-        # Record to DB
-        self.db.execute(
-            """INSERT INTO trades (symbol, side, entry_price, quantity, leverage,
-               strategy, entry_time, fees, status, stop_loss, take_profit)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (signal.symbol, signal.direction.value, round(avg_price, 2),
-             round(total_filled, 8), plan.order.leverage, signal.strategy,
-             datetime.utcnow().isoformat(), round(total_fees, 6), "OPEN",
-             signal.stop_loss, signal.take_profit),
-        )
+        # Record to DB — prevent duplicate OPEN records per symbol
+        existing = self.db.execute(
+            "SELECT id FROM trades WHERE symbol=? AND side=? AND status='OPEN'",
+            (signal.symbol, signal.direction.value)
+        ).fetchone()
+        if existing:
+            # Update existing record (position was added to on exchange)
+            self.db.execute(
+                "UPDATE trades SET entry_price=?, quantity=?, leverage=?, fees=fees+?, "
+                "stop_loss=?, take_profit=? WHERE id=?",
+                (round(avg_price, 2), round(total_filled, 8), plan.order.leverage,
+                 round(total_fees, 6), signal.stop_loss, signal.take_profit, existing[0]),
+            )
+        else:
+            self.db.execute(
+                """INSERT INTO trades (symbol, side, entry_price, quantity, leverage,
+                   strategy, entry_time, fees, status, stop_loss, take_profit)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (signal.symbol, signal.direction.value, round(avg_price, 2),
+                 round(total_filled, 8), plan.order.leverage, signal.strategy,
+                 datetime.now(timezone.utc).isoformat(), round(total_fees, 6), "OPEN",
+                 signal.stop_loss, signal.take_profit),
+            )
 
         return ExecutionResult(
             success=True, order_ids=order_ids,
@@ -314,7 +327,9 @@ class LiveExecutor:
         return await self.exchange.fapiPrivatePostOrder(params)
 
     async def get_positions(self) -> List[Position]:
-        """Fetch open positions from exchange via direct fapi call."""
+        """Fetch open positions from exchange via direct fapi call.
+        Falls back to DB if API fails (prevents opening positions when status unknown).
+        """
         try:
             await self.rate_limiter.acquire_data_slot()
             account = await self.exchange.fapiPrivateV2GetAccount()
@@ -336,8 +351,32 @@ class LiveExecutor:
                 ))
             return result
         except Exception as e:
-            logger.error(f"Failed to fetch positions: {e}")
-            return []
+            logger.error(f"Failed to fetch positions from exchange: {e}")
+            # Fallback to DB to prevent opening new positions when status unknown
+            try:
+                rows = self.db.execute(
+                    "SELECT symbol, side, entry_price, quantity, leverage, strategy "
+                    "FROM trades WHERE status = 'OPEN'"
+                ).fetchall()
+                result: List[Position] = []
+                for r in rows:
+                    result.append(Position(
+                        symbol=r[0],
+                        direction=Direction.LONG if r[1] == "LONG" else Direction.SHORT,
+                        entry_price=float(r[2]),
+                        quantity=float(r[3]),
+                        leverage=int(r[4]),
+                        unrealized_pnl=0.0,
+                        strategy=r[5] or "unknown",
+                        entry_time=datetime.now(timezone.utc),
+                        current_stop=0.0,
+                    ))
+                if result:
+                    logger.info(f"Using DB fallback: {len(result)} positions")
+                return result
+            except Exception as e2:
+                logger.error(f"DB fallback also failed: {e2}")
+                return []
 
     async def close_position(self, position: Position,
                               order_type: OrderType = OrderType.MARKET) -> ExecutionResult:
@@ -360,15 +399,28 @@ class LiveExecutor:
                 fees_paid=round(fees, 6), slippage=0,
             )
         except Exception as e:
+            error_str = str(e)
+            # -2022 "ReduceOnly Order is rejected" means position already closed
+            # (e.g., exchange SL/TP already triggered). Treat as success.
+            if "-2022" in error_str:
+                logger.info(f"Position {position.symbol} already closed on exchange (SL/TP triggered)")
+                return ExecutionResult(
+                    success=True, order_ids=[], avg_fill_price=0,
+                    total_filled=0, fees_paid=0, slippage=0,
+                )
             return ExecutionResult(
                 success=False, order_ids=[], avg_fill_price=0,
-                total_filled=0, fees_paid=0, slippage=0, error=str(e),
+                total_filled=0, fees_paid=0, slippage=0, error=error_str,
             )
 
     async def cancel_all_pending(self) -> None:
-        """Cancel all open orders."""
-        try:
-            await self.rate_limiter.acquire_order_slot()
-            await self.exchange.cancel_all_orders()
-        except Exception as e:
-            logger.error(f"Failed to cancel orders: {e}")
+        """Cancel all open orders for all traded symbols."""
+        symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+                    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT"]
+        for sym in symbols:
+            try:
+                ccxt_sym = self._to_ccxt_symbol(sym)
+                await self.rate_limiter.acquire_order_slot()
+                await self.exchange.cancel_all_orders(ccxt_sym)
+            except Exception:
+                pass  # No open orders for this symbol is fine

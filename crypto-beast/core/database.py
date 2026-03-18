@@ -37,7 +37,8 @@ class Database:
             fees REAL,
             status TEXT DEFAULT 'OPEN',
             stop_loss REAL,
-            take_profit REAL
+            take_profit REAL,
+            peak_profit REAL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS equity_snapshots (
@@ -122,9 +123,72 @@ class Database:
             active_modules INTEGER,
             details TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS rejected_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            side TEXT,
+            strategy TEXT,
+            reason TEXT,
+            signal_price REAL,
+            timestamp TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS recommendation_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT,
+            module TEXT,
+            description TEXT,
+            approved INTEGER DEFAULT 0,
+            applied_at TEXT,
+            strategy_version TEXT,
+            metric_before REAL,
+            metric_after REAL,
+            effective INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS strategy_versions (
+            version TEXT PRIMARY KEY,
+            date TEXT,
+            description TEXT,
+            source TEXT,
+            git_commit TEXT,
+            config_snapshot TEXT,
+            metrics_snapshot TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS change_registry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            source TEXT,
+            file_changed TEXT,
+            description TEXT,
+            strategy_version TEXT,
+            git_commit TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS watchdog_interventions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            level TEXT,
+            event TEXT,
+            action TEXT,
+            outcome TEXT,
+            claude_used INTEGER DEFAULT 0,
+            duration_seconds INTEGER DEFAULT 0
+        );
         """
         self._conn.executescript(schema)
         self._conn.commit()
+
+        # Migrations for existing databases
+        try:
+            self._conn.execute("SELECT peak_profit FROM trades LIMIT 1")
+        except sqlite3.OperationalError:
+            self._conn.execute("ALTER TABLE trades ADD COLUMN peak_profit REAL DEFAULT 0")
+            self._conn.commit()
+            logger.info("Migration: added peak_profit column to trades")
+
         logger.info(f"Database initialized at {self.db_path}")
 
     def execute(self, query: str, params: tuple = ()) -> sqlite3.Cursor:

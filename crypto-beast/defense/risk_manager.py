@@ -95,10 +95,21 @@ class RiskManager:
             logger.debug("Signal rejected: no available capital")
             return None
 
-        # Calculate position size based on risk
-        risk_per_trade = capital_for_this * self.config.max_risk_per_trade
+        # Check minimum profit vs fees (TP must cover at least 3x round-trip fees)
         entry = signal.entry_price
         stop = signal.stop_loss
+        tp = signal.take_profit
+        if entry > 0 and tp > 0:
+            tp_distance_pct = abs(tp - entry) / entry
+            min_profit_pct = self.config.taker_fee * 2 * 3 / leverage  # 3x round-trip fees / leverage
+            if tp_distance_pct < min_profit_pct:
+                logger.debug(
+                    f"Signal rejected: TP too close ({tp_distance_pct:.4%} < {min_profit_pct:.4%} min for {leverage}x)"
+                )
+                return None
+
+        # Calculate position size based on risk
+        risk_per_trade = capital_for_this * self.config.max_risk_per_trade
         risk_distance = abs(entry - stop)
 
         if risk_distance == 0:

@@ -21,7 +21,9 @@ class CompoundEngine:
         ).fetchall()
         if len(rows) < 10:
             return 0.02  # Default conservative fraction
-        pnls = [r[0] for r in rows]
+        pnls = [r[0] for r in rows if r[0] is not None]
+        if not pnls:
+            return 0.02
         wins = [p for p in pnls if p > 0]
         losses = [abs(p) for p in pnls if p < 0]
         if not losses:

@@ -1,6 +1,6 @@
 """FeeOptimizer - Maker/taker optimization and fee budget tracking."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 
 from core.models import TradeSignal, OrderType
@@ -9,13 +9,12 @@ from core.models import TradeSignal, OrderType
 class FeeOptimizer:
     """Optimizes order type (maker vs taker) and tracks fee budget."""
 
-    MAKER_FEE = 0.0002  # 0.02% for Binance Futures
-    TAKER_FEE = 0.0004  # 0.04%
-
-    def __init__(self, daily_fee_budget: float = 5.0):
-        self.daily_fee_budget = daily_fee_budget
+    def __init__(self, config):
+        self._maker_fee = config.maker_fee
+        self._taker_fee = config.taker_fee
+        self.daily_fee_budget = config.starting_capital * config.daily_fee_budget
         self._fees_today = 0.0
-        self._last_reset = datetime.utcnow().date()
+        self._last_reset = datetime.now(timezone.utc).date()
 
     def recommend_order_type(
         self, signal: TradeSignal, urgency: float = 0.5
@@ -32,8 +31,8 @@ class FeeOptimizer:
     def estimate_fee(self, notional: float, order_type: OrderType) -> float:
         """Estimate fee for a given notional value."""
         if order_type == OrderType.LIMIT:
-            return notional * self.MAKER_FEE
-        return notional * self.TAKER_FEE
+            return notional * self._maker_fee
+        return notional * self._taker_fee
 
     def record_fee(self, fee: float) -> None:
         """Record a fee payment, reset daily if needed."""
@@ -52,7 +51,7 @@ class FeeOptimizer:
 
     def _maybe_reset(self) -> None:
         """Reset daily fee counter if the date has changed."""
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         if today > self._last_reset:
             self._fees_today = 0.0
             self._last_reset = today

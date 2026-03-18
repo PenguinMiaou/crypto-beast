@@ -1,8 +1,16 @@
 """Tests for PositionManager SL/TP monitoring."""
 import pytest
+from types import SimpleNamespace
 
 from core.database import Database
 from execution.position_manager import PositionManager
+
+
+def _make_config(activation_pct=0.02, drawback_pct=0.50):
+    return SimpleNamespace(
+        profit_protect_activation_pct=activation_pct,
+        profit_protect_drawback_pct=drawback_pct,
+    )
 
 
 @pytest.fixture
@@ -25,7 +33,7 @@ class TestCheckPositions:
 
     def test_long_stop_loss_hit(self, db):
         _insert_trade(db, stop_loss=64000.0, take_profit=67000.0)
-        pm = PositionManager(db, lambda s: 63500.0)
+        pm = PositionManager(db, lambda s: 63500.0, _make_config())
         result = pm.check_positions()
         assert len(result) == 1
         assert result[0]["reason"] == "STOP_LOSS"
@@ -33,7 +41,7 @@ class TestCheckPositions:
 
     def test_long_take_profit_hit(self, db):
         _insert_trade(db, stop_loss=64000.0, take_profit=67000.0)
-        pm = PositionManager(db, lambda s: 68000.0)
+        pm = PositionManager(db, lambda s: 68000.0, _make_config())
         result = pm.check_positions()
         assert len(result) == 1
         assert result[0]["reason"] == "TAKE_PROFIT"
@@ -42,7 +50,7 @@ class TestCheckPositions:
     def test_short_stop_loss_hit(self, db):
         _insert_trade(db, side="SHORT", entry_price=65000.0,
                       stop_loss=66000.0, take_profit=63000.0)
-        pm = PositionManager(db, lambda s: 66500.0)
+        pm = PositionManager(db, lambda s: 66500.0, _make_config())
         result = pm.check_positions()
         assert len(result) == 1
         assert result[0]["reason"] == "STOP_LOSS"
@@ -51,7 +59,7 @@ class TestCheckPositions:
     def test_short_take_profit_hit(self, db):
         _insert_trade(db, side="SHORT", entry_price=65000.0,
                       stop_loss=66000.0, take_profit=63000.0)
-        pm = PositionManager(db, lambda s: 62500.0)
+        pm = PositionManager(db, lambda s: 62500.0, _make_config())
         result = pm.check_positions()
         assert len(result) == 1
         assert result[0]["reason"] == "TAKE_PROFIT"
@@ -59,13 +67,13 @@ class TestCheckPositions:
 
     def test_price_between_sl_tp_no_close(self, db):
         _insert_trade(db, stop_loss=64000.0, take_profit=67000.0)
-        pm = PositionManager(db, lambda s: 65500.0)
+        pm = PositionManager(db, lambda s: 65500.0, _make_config())
         result = pm.check_positions()
         assert len(result) == 0
 
     def test_no_sl_tp_skipped(self, db):
         _insert_trade(db, stop_loss=None, take_profit=None)
-        pm = PositionManager(db, lambda s: 63000.0)
+        pm = PositionManager(db, lambda s: 63000.0, _make_config())
         result = pm.check_positions()
         assert len(result) == 0
 
@@ -75,7 +83,7 @@ class TestCheckPositions:
         # fees = 64000*0.01*0.0004 = 0.256
         # net = -50 - 0.256 = -50.256
         _insert_trade(db, stop_loss=64000.0, take_profit=67000.0)
-        pm = PositionManager(db, lambda s: 63000.0)
+        pm = PositionManager(db, lambda s: 63000.0, _make_config())
         result = pm.check_positions()
         assert result[0]["pnl"] == round(-50.0 - 64000.0 * 0.01 * 0.0004, 4)
 
@@ -86,7 +94,7 @@ class TestCheckPositions:
         # net = 100 - 0.252 = 99.748
         _insert_trade(db, side="SHORT", entry_price=65000.0,
                       stop_loss=66000.0, take_profit=63000.0)
-        pm = PositionManager(db, lambda s: 62000.0)
+        pm = PositionManager(db, lambda s: 62000.0, _make_config())
         result = pm.check_positions()
         assert result[0]["pnl"] == round(100.0 - 63000.0 * 0.01 * 0.0004, 4)
 
@@ -95,7 +103,7 @@ class TestCloseTrade:
 
     def test_close_trade_updates_db(self, db):
         _insert_trade(db, stop_loss=64000.0, take_profit=67000.0)
-        pm = PositionManager(db, lambda s: 63000.0)
+        pm = PositionManager(db, lambda s: 63000.0, _make_config())
         results = pm.check_positions()
         assert len(results) == 1
 
@@ -108,7 +116,7 @@ class TestCloseTrade:
 
     def test_closed_trade_not_rechecked(self, db):
         _insert_trade(db, stop_loss=64000.0, take_profit=67000.0)
-        pm = PositionManager(db, lambda s: 63000.0)
+        pm = PositionManager(db, lambda s: 63000.0, _make_config())
         results = pm.check_positions()
         pm.close_trade(results[0])
 
@@ -129,8 +137,8 @@ class TestProfitProtection:
             return prices[0]
 
         pm = PositionManager(db, get_price,
-                             profit_protect_activation_pct=0.02,
-                             profit_protect_drawback_pct=0.50)
+                             _make_config(activation_pct=0.02,
+                                          drawback_pct=0.50))
 
         # Peak at +3%
         prices[0] = 65000.0 * 1.03
@@ -153,8 +161,8 @@ class TestProfitProtection:
             return prices[0]
 
         pm = PositionManager(db, get_price,
-                             profit_protect_activation_pct=0.02,
-                             profit_protect_drawback_pct=0.50)
+                             _make_config(activation_pct=0.02,
+                                          drawback_pct=0.50))
 
         # SHORT profits when price drops. Peak at -3%
         prices[0] = 65000.0 * 0.97  # 3% profit for short
@@ -175,7 +183,7 @@ class TestProfitProtection:
         def get_price(s):
             return prices[0]
 
-        pm = PositionManager(db, get_price)
+        pm = PositionManager(db, get_price, _make_config())
 
         # Peak at +3%
         peak_price = 65000.0 * 1.03
@@ -196,7 +204,7 @@ class TestProfitProtection:
         def get_price(s):
             return prices[0]
 
-        pm = PositionManager(db, get_price)
+        pm = PositionManager(db, get_price, _make_config())
 
         # Peak at only +1% (below 2% activation)
         prices[0] = 65000.0 * 1.01

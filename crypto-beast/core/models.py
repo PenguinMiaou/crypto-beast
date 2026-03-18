@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -36,6 +36,7 @@ class ShieldAction(Enum):
     CONTINUE = "CONTINUE"
     HALT = "HALT"
     EMERGENCY_CLOSE = "EMERGENCY_CLOSE"
+    ALREADY_NOTIFIED = "ALREADY_NOTIFIED"  # Triggered but notification already sent
 
 class OrderType(Enum):
     LIMIT = "LIMIT"
@@ -51,7 +52,7 @@ class DirectionalBias:
     direction: SignalType    # BULLISH, BEARISH, NEUTRAL
     confidence: float        # 0.0 to 1.0
     reason: str              # Human-readable explanation
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 # === Strategy Layer Signals (Layer 3 output) ===
 
@@ -67,7 +68,7 @@ class TradeSignal:
     strategy: str            # Which strategy generated this
     regime: MarketRegime     # Market regime at signal time
     timeframe_score: int     # MultiTimeframe confluence score
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 # === Validated Order (Layer 4 output) ===
 
@@ -158,7 +159,7 @@ class Pattern:
     target_price: float
     stop_price: float
     confidence: float
-    detected_at: datetime = field(default_factory=datetime.utcnow)
+    detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 # === Market Data ===
 

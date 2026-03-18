@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+._*
+.AppleDouble
+
+# Sensitive
+*.env
+!*.env.example
+
+# Runtime
+*.db
+*.db-shm
+*.db-wal
+*.pid
+*.state
+*.log
+review_data/
+logs/
+backups/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/

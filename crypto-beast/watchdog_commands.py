@@ -52,6 +52,9 @@ class WatchdogCommands:
             "/confirm": self._cmd_confirm,
             "/restart": self._cmd_restart,
             "/review": self._cmd_review,
+            "/approve": self._cmd_approve,
+            "/reject": self._cmd_reject,
+            "/rollback": self._cmd_rollback,
             "/directive": self._cmd_directive,
             "/directives": self._cmd_directives,
             "/deldirective": self._cmd_deldirective,
@@ -84,6 +87,9 @@ class WatchdogCommands:
             "/stopall — 停止一切\n"
             "/restart — 重启Bot\n"
             "/review — 触发复盘\n"
+            "/approve — 批准建议\n"
+            "/reject — 拒绝建议\n"
+            "/rollback — 回滚版本\n"
             "/directive — 设置策略方向\n"
             "/directives — 查看指令\n"
             "/cost — Token消耗\n"
@@ -312,7 +318,94 @@ class WatchdogCommands:
             else:
                 self._telegram.send(f"未找到 {date} 的复盘报告")
         else:
-            self._telegram.send("复盘功能将在 Plan 3 实现\n用法: /review YYYY-MM-DD 查看历史")
+            # Trigger ad-hoc review
+            self._state.update(command={"action": "REVIEW"})
+            self._telegram.send("已触发即时复盘，请稍候...")
+
+    def _cmd_approve(self, args: List[str]) -> None:
+        """Approve pending parameter changes from daily review."""
+        state = self._state.read()
+        approvals = state.get("pending_approvals", [])
+        if not approvals:
+            self._telegram.send("无待批准的建议")
+            return
+
+        if args:
+            # Approve specific items by number
+            try:
+                ids = [int(a) for a in args[0].split(",")]
+            except ValueError:
+                self._telegram.send("用法: /approve 1,2 或 /approve (全部)")
+                return
+            selected = [a for a in approvals if a.get("id") in ids]
+            if not selected:
+                self._telegram.send(f"未找到建议 #{args[0]}")
+                return
+        else:
+            selected = approvals
+
+        # Write approved items to a file for Claude to apply
+        approved_file = os.path.join(os.path.dirname(self._db_path), "review_data", "approved_changes.json")
+        os.makedirs(os.path.dirname(approved_file), exist_ok=True)
+        with open(approved_file, "w") as f:
+            json.dump(selected, f, indent=2, default=str)
+
+        # Mark as approved in recommendation_history
+        try:
+            import sqlite3
+            conn = sqlite3.connect(self._db_path)
+            for item in selected:
+                conn.execute(
+                    "UPDATE recommendation_history SET approved=1, applied_at=? WHERE id=?",
+                    (datetime.now(timezone.utc).isoformat(), item.get("db_id"))
+                )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+        # Clear approved items from pending
+        remaining = [a for a in approvals if a not in selected]
+        self._state.update(pending_approvals=remaining)
+
+        # Signal watchdog to apply changes via Claude
+        self._state.update(command={"action": "APPLY_APPROVED"})
+        self._telegram.send(f"已批准 {len(selected)} 项建议，正在调用Claude执行...")
+
+    def _cmd_reject(self, args: List[str]) -> None:
+        """Reject all pending parameter changes."""
+        state = self._state.read()
+        approvals = state.get("pending_approvals", [])
+        if not approvals:
+            self._telegram.send("无待批准的建议")
+            return
+        self._state.update(pending_approvals=[])
+        self._telegram.send(f"已拒绝 {len(approvals)} 项建议")
+
+    def _cmd_rollback(self, args: List[str]) -> None:
+        """Rollback to previous strategy version."""
+        rows = self._query_db(
+            "SELECT version, date, config_snapshot FROM strategy_versions ORDER BY date DESC LIMIT 2"
+        )
+        if len(rows) < 2:
+            self._telegram.send("无法回滚：只有一个版本")
+            return
+        current = rows[0]
+        previous = rows[1]
+        if not previous["config_snapshot"]:
+            self._telegram.send(f"无法回滚到 {previous['version']}：缺少配置快照")
+            return
+        # Write rollback instruction for Claude
+        rollback_file = os.path.join(os.path.dirname(self._db_path), "review_data", "rollback_target.json")
+        os.makedirs(os.path.dirname(rollback_file), exist_ok=True)
+        with open(rollback_file, "w") as f:
+            json.dump({
+                "from_version": current["version"],
+                "to_version": previous["version"],
+                "config_snapshot": previous["config_snapshot"],
+            }, f, indent=2)
+        self._state.update(command={"action": "ROLLBACK"})
+        self._telegram.send(f"正在从 {current['version']} 回滚到 {previous['version']}...")
 
     def _cmd_directive(self, args: List[str]) -> None:
         if not args:
@@ -378,5 +471,15 @@ class WatchdogCommands:
             self._telegram.send(f"读取失败: {e}")
 
     def _cmd_version(self, args: List[str]) -> None:
-        # Strategy versioning will be fully implemented in Chunk C
-        self._telegram.send("*Crypto Beast v1.0*\n策略版本化将在后续实现")
+        rows = self._query_db(
+            "SELECT version, date, description, source FROM strategy_versions ORDER BY date DESC LIMIT 5"
+        )
+        if not rows:
+            self._telegram.send("*Crypto Beast v1.0*\n无版本记录")
+            return
+        lines = ["*策略版本*\n"]
+        for r in rows:
+            lines.append(f"*{r['version']}* ({r['date']})")
+            lines.append(f"  {r['description']}")
+            lines.append(f"  来源: {r['source']}")
+        self._telegram.send("\n".join(lines))

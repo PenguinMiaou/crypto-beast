@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Crypto Beast Watchdog Daemon — monitors and auto-restarts the trading bot."""
 import argparse
+import json
 import os
 import shutil
 import signal
@@ -63,6 +64,52 @@ class WatchdogDaemon:
         self._log_monitor: Optional[LogMonitor] = None
         self._commands: Optional['WatchdogCommands'] = None
 
+        # Claude integration
+        self._claude_lock = False
+        self._claude_lock_time: Optional[float] = None
+        self._last_daily_review: Optional[str] = None
+        self._last_weekly_review: Optional[str] = None
+        self._last_monthly_review: Optional[str] = None
+
+    # === DB Recording ===
+
+    def _record_intervention(self, level: str, event: str, action: str,
+                              outcome: str, claude_used: bool = False,
+                              duration: int = 0) -> None:
+        """Record an intervention to the watchdog_interventions DB table."""
+        try:
+            import sqlite3
+            db_path = os.path.join(self._base_dir, "crypto_beast.db")
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "INSERT INTO watchdog_interventions (timestamp, level, event, action, outcome, claude_used, duration_seconds) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (datetime.now(timezone.utc).isoformat(), level, event[:500], action[:200], outcome, int(claude_used), duration)
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug(f"Failed to record intervention: {e}")
+
+    def _ensure_initial_version(self) -> None:
+        """Create v1.0 strategy version if none exists."""
+        try:
+            import sqlite3
+            db_path = os.path.join(self._base_dir, "crypto_beast.db")
+            conn = sqlite3.connect(db_path)
+            count = conn.execute("SELECT COUNT(*) FROM strategy_versions").fetchone()[0]
+            if count == 0:
+                conn.execute(
+                    "INSERT INTO strategy_versions (version, date, description, source) VALUES (?, ?, ?, ?)",
+                    ("v1.0", datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                     "Initial release — 6 strategies, Binance USDT-M Futures", "manual")
+                )
+                conn.commit()
+                logger.info("Created initial strategy version v1.0")
+            conn.close()
+        except Exception as e:
+            logger.debug(f"Failed to ensure initial version: {e}")
+
     # === Process Management ===
 
     def start_bot(self) -> None:
@@ -107,6 +154,9 @@ class WatchdogDaemon:
 
     def restart_bot(self, reason: str) -> None:
         """Stop and restart the bot."""
+        if self._shutting_down.is_set():
+            logger.info("Watchdog shutting down, skipping restart")
+            return
         logger.warning(f"Restarting bot: {reason}")
         self._event_router.record_restart()
 
@@ -126,6 +176,7 @@ class WatchdogDaemon:
             restarts_today=self._state.read()["restarts_today"] + 1)
         self._telegram.send(f"[L1] Bot restarted: {reason}")
         self._state.add_event("L1", f"Bot restarted: {reason}")
+        self._record_intervention("L1", reason, "restart", "bot_restarted")
 
     # === Log Event Handling ===
 
@@ -155,11 +206,240 @@ class WatchdogDaemon:
                 self._network_retry_count = 0
 
         elif level == EventLevel.L2:
-            logger.warning(f"L2 event detected: {line[-200:]}")
-            self._telegram.send(
-                f"[L2] Unknown error detected:\n{line[-200:]}\n"
-                "Claude Code intervention needed (Plan 3)")
-            self._state.add_event("L2", line[-200:])
+            # Extract error key: strip timestamp/level prefix, take first 80 chars of message
+            import re as _re
+            msg = _re.sub(r'^\d{2}:\d{2}:\d{2}\s*\|\s*\w+\s*\|\s*', '', line[-200:])
+            error_key = msg[:80]
+            if self._event_router.should_escalate_l2(error_key):
+                logger.warning(f"L2 event detected: {line[-200:]}")
+                self._telegram.send(f"[L2] 检测到未知错误，正在调用Claude分析...")
+                self._state.add_event("L2", line[-200:])
+                Thread(
+                    target=self.escalate_to_claude,
+                    args=(f"Error detected in log:\n{line[-200:]}\n\nFull recent log context needed.",),
+                    daemon=True,
+                ).start()
+            else:
+                logger.debug(f"L2 event suppressed (cooldown): {line[-100:]}")
+
+    # === Claude Integration ===
+
+    def escalate_to_claude(self, error_context: str) -> bool:
+        """Escalate an error to Claude Code for analysis and fix."""
+        if self._shutting_down.is_set():
+            return False
+        import time as _time
+
+        # Check daily budget
+        state = self._state.read()
+        if state.get("claude_calls_today", 0) >= 3:
+            logger.warning("Claude daily budget exceeded, skipping escalation")
+            return False
+
+        # Check concurrency lock
+        if self._claude_lock:
+            if self._claude_lock_time and (_time.time() - self._claude_lock_time) < 900:
+                logger.info("Claude session already active, skipping")
+                return False
+            # Stale lock, release
+            self._claude_lock = False
+
+        # Write error context
+        context_file = "/tmp/crypto_beast_error_context.txt"
+        with open(context_file, "w") as f:
+            f.write(error_context)
+
+        # Acquire lock
+        self._claude_lock = True
+        self._claude_lock_time = _time.time()
+
+        try:
+            script = os.path.join(self._base_dir, "scripts", "emergency-fix.sh")
+            result = subprocess.run(
+                ["bash", script],
+                cwd=self._base_dir,
+                capture_output=True, text=True,
+                timeout=600,  # 10 minutes (claude needs time for analysis + fix + pytest)
+            )
+            success = result.returncode == 0
+            self._state.update(claude_calls_today=state["claude_calls_today"] + 1)
+
+            duration = int(time.time() - self._claude_lock_time) if self._claude_lock_time else 0
+            if success:
+                self._telegram.send("[L2] Claude修复成功，正在重启Bot")
+                self._record_intervention("L2", error_context[:500], "claude_fix", "success", claude_used=True, duration=duration)
+                self.restart_bot("L2 Claude fix applied")
+            else:
+                self._telegram.send("[L2-TERMINAL] Claude修复失败，需要人工介入")
+                self._state.update(status="L2-TERMINAL")
+                self._record_intervention("L2", error_context[:500], "claude_fix", "failed", claude_used=True, duration=duration)
+
+            return success
+        except subprocess.TimeoutExpired:
+            self._telegram.send("[L2] Claude修复超时(5min)，需要人工介入")
+            self._state.update(status="L2-TERMINAL")
+            return False
+        except Exception as e:
+            logger.error(f"Claude escalation failed: {e}")
+            return False
+        finally:
+            self._claude_lock = False
+            self._claude_lock_time = None
+
+    def run_review(self, review_type: str) -> bool:
+        """Run a Claude review (daily/weekly/monthly)."""
+        if self._claude_lock:
+            logger.info("Claude session active, skipping review")
+            return False
+
+        self._claude_lock = True
+        self._claude_lock_time = time.time()
+
+        try:
+            script = os.path.join(self._base_dir, "scripts", f"{review_type}-review.sh")
+            if not os.path.exists(script):
+                logger.warning(f"Review script not found: {script}")
+                return False
+
+            self._telegram.send(f"[L3] 开始{review_type}复盘...")
+            result = subprocess.run(
+                ["bash", script],
+                cwd=self._base_dir,
+                capture_output=True, text=True,
+                timeout=600,  # 10 minutes
+            )
+            # Send Telegram summary FIRST (before state update which could fail)
+            summary_file = os.path.join(self._base_dir, "review_data", "telegram_summary.txt")
+            try:
+                if os.path.exists(summary_file):
+                    with open(summary_file) as f:
+                        summary = f.read().strip()
+                    if summary:
+                        self._telegram.send(f"[L3] {review_type}复盘完成:\n{summary}")
+                    os.remove(summary_file)
+                else:
+                    self._telegram.send(f"[L3] {review_type}复盘完成")
+            except Exception as e:
+                logger.error(f"Failed to send review summary: {e}")
+
+            try:
+                state = self._state.read()
+                self._state.update(claude_calls_today=state.get("claude_calls_today", 0) + 1)
+            except Exception as e:
+                logger.error(f"Failed to update claude call counter: {e}")
+
+            duration = int(time.time() - self._claude_lock_time) if self._claude_lock_time else 0
+            success = result.returncode == 0
+            self._record_intervention(
+                "L3", f"{review_type} review", "review",
+                "success" if success else "failed",
+                claude_used=True, duration=duration,
+            )
+            return success
+        except subprocess.TimeoutExpired:
+            self._telegram.send(f"[L3] {review_type}复盘超时")
+            return False
+        except Exception as e:
+            logger.error(f"Review failed: {e}")
+            return False
+        finally:
+            self._claude_lock = False
+            self._claude_lock_time = None
+
+    def _apply_approved_changes(self) -> None:
+        """Apply approved changes via Claude."""
+        approved_file = os.path.join(self._base_dir, "review_data", "approved_changes.json")
+        if not os.path.exists(approved_file):
+            self._telegram.send("[CMD] 未找到已批准的变更文件")
+            return
+
+        if self._claude_lock:
+            self._telegram.send("[CMD] Claude正忙，请稍后再试")
+            return
+
+        self._claude_lock = True
+        self._claude_lock_time = time.time()
+        try:
+            with open(approved_file) as f:
+                changes = json.load(f)
+
+            # Write a Claude prompt for applying changes
+            prompt = (
+                f"Apply these approved parameter changes to Crypto Beast:\n\n"
+                f"{json.dumps(changes, indent=2)}\n\n"
+                f"1. Read config.py\n"
+                f"2. Apply each change\n"
+                f"3. Run python -m pytest -q\n"
+                f"4. If tests pass, commit with '[approved] <description>'\n"
+                f"5. If tests fail, git checkout . and report failure\n"
+                f"NEVER modify .env, watchdog.py, or watchdog_state.py"
+            )
+
+            result = subprocess.run(
+                ["claude", "-p", prompt, "--allowedTools", "Read,Bash,Edit,Write,Glob,Grep"],
+                cwd=self._base_dir,
+                capture_output=True, text=True,
+                timeout=300,
+            )
+
+            if result.returncode == 0:
+                self._telegram.send("[CMD] 变更已应用，正在重启Bot")
+                self.restart_bot("Approved changes applied")
+                os.remove(approved_file)
+            else:
+                self._telegram.send("[CMD] 变更应用失败，已回滚")
+        except Exception as e:
+            self._telegram.send(f"[CMD] 应用变更出错: {e}")
+        finally:
+            self._claude_lock = False
+            self._claude_lock_time = None
+
+    def _run_rollback(self) -> None:
+        """Execute a strategy rollback via Claude."""
+        rollback_file = os.path.join(self._base_dir, "review_data", "rollback_target.json")
+        if not os.path.exists(rollback_file):
+            self._telegram.send("[CMD] 未找到回滚目标")
+            return
+
+        if self._claude_lock:
+            self._telegram.send("[CMD] Claude正忙，请稍后再试")
+            return
+
+        self._claude_lock = True
+        self._claude_lock_time = time.time()
+        try:
+            with open(rollback_file) as f:
+                target = json.load(f)
+
+            prompt = (
+                f"Rollback Crypto Beast strategy from {target['from_version']} to {target['to_version']}.\n\n"
+                f"Config snapshot to restore:\n{target.get('config_snapshot', 'N/A')}\n\n"
+                f"1. Read current config.py\n"
+                f"2. Restore the parameters from the snapshot\n"
+                f"3. Run python -m pytest -q\n"
+                f"4. If tests pass, commit with '[rollback] {target['from_version']} -> {target['to_version']}'\n"
+                f"5. Insert new strategy_version record\n"
+                f"NEVER modify .env, watchdog.py, or watchdog_state.py"
+            )
+
+            result = subprocess.run(
+                ["claude", "-p", prompt, "--allowedTools", "Read,Bash,Edit,Write,Glob,Grep"],
+                cwd=self._base_dir,
+                capture_output=True, text=True,
+                timeout=300,
+            )
+
+            if result.returncode == 0:
+                self._telegram.send(f"[CMD] 已回滚到 {target['to_version']}，正在重启Bot")
+                self.restart_bot(f"Rollback to {target['to_version']}")
+                os.remove(rollback_file)
+            else:
+                self._telegram.send("[CMD] 回滚失败")
+        except Exception as e:
+            self._telegram.send(f"[CMD] 回滚出错: {e}")
+        finally:
+            self._claude_lock = False
+            self._claude_lock_time = None
 
     # === Heartbeat (Main Loop) ===
 
@@ -229,6 +509,27 @@ class WatchdogDaemon:
         if now.hour == 0 and now.minute == 0:
             self._state.reset_daily_counters()
 
+        # Check review schedule
+        if now.hour == 0 and 30 <= now.minute <= 35:
+            today_str = now.strftime("%Y-%m-%d")
+            if self._last_daily_review != today_str:
+                self._last_daily_review = today_str
+                Thread(target=self.run_review, args=("daily",), daemon=True).start()
+
+        # Weekly: Monday 00:45 UTC
+        if now.weekday() == 0 and now.hour == 0 and 45 <= now.minute <= 50:
+            week_str = now.strftime("%Y-W%V")
+            if self._last_weekly_review != week_str:
+                self._last_weekly_review = week_str
+                Thread(target=self.run_review, args=("weekly",), daemon=True).start()
+
+        # Monthly: 1st of month 01:00 UTC
+        if now.day == 1 and now.hour == 1 and 0 <= now.minute <= 5:
+            month_str = now.strftime("%Y-%m")
+            if self._last_monthly_review != month_str:
+                self._last_monthly_review = month_str
+                Thread(target=self.run_review, args=("monthly",), daemon=True).start()
+
     def _handle_command(self, cmd) -> None:
         """Process a command from watchdog.state."""
         if isinstance(cmd, str):
@@ -248,6 +549,18 @@ class WatchdogDaemon:
             logger.info("RESTART command received")
             self.restart_bot("Manual restart via Telegram")
             self._state.update(status="running")
+
+        elif action == "APPLY_APPROVED":
+            logger.info("Applying approved changes via Claude")
+            Thread(target=self._apply_approved_changes, daemon=True).start()
+
+        elif action == "REVIEW":
+            logger.info("Ad-hoc review triggered")
+            Thread(target=self.run_review, args=("daily",), daemon=True).start()
+
+        elif action == "ROLLBACK":
+            logger.info("Rollback triggered")
+            Thread(target=self._run_rollback, daemon=True).start()
 
         elif action == "SHUTDOWN":
             logger.info("SHUTDOWN command — graceful bot stop")
@@ -378,6 +691,8 @@ class WatchdogDaemon:
             rotation="1 day", retention="30 days", level="DEBUG",
         )
 
+        os.makedirs(os.path.join(self._base_dir, "logs", "reviews"), exist_ok=True)
+
         logger.info(f"Watchdog daemon starting (mode={self._mode})")
 
         # Signal handling
@@ -420,6 +735,9 @@ class WatchdogDaemon:
 
         # Kill any existing zombie processes
         self._event_router.kill_zombie_processes("crypto_system")
+
+        # Ensure initial strategy version exists
+        self._ensure_initial_version()
 
         # Start bot
         self.start_bot()
