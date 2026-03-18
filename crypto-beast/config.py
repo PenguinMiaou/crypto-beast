@@ -54,8 +54,8 @@ class Config:
     mtf_min_confluence: int = 6
 
     # Profit protection
-    profit_protect_activation_pct: float = 0.02   # Activate after 2% profit
-    profit_protect_drawback_pct: float = 0.50      # Close if 50% of profit given back
+    profit_protect_activation_pct: float = 0.05   # Activate after 5% leveraged PnL
+    profit_protect_drawback_pct: float = 0.50      # Close if 50% of peak profit given back
 
     # System
     main_loop_interval: int = 5

@@ -590,9 +590,11 @@ class TradingBot:
         positions = await m["executor"].get_positions()
 
         # Get real equity from Binance (ground truth, not DB calculation)
+        available_balance = 0
         try:
             account = await self.exchange.fapiPrivateV2GetAccount()
             equity = float(account.get("totalMarginBalance", 0))
+            available_balance = float(account.get("availableBalance", 0))
         except Exception:
             # Fallback to DB calculation if API fails
             closed_pnl = self.db.execute(
@@ -610,7 +612,7 @@ class TradingBot:
 
         portfolio = Portfolio(
             equity=equity,
-            available_balance=equity,
+            available_balance=available_balance if available_balance > 0 else equity,
             positions=positions,
             peak_equity=self._peak_equity,
             locked_capital=m["compound_engine"].get_locked_capital(),
@@ -666,8 +668,10 @@ class TradingBot:
                     m["multi_timeframe"].update(symbol, klines_by_tf)
 
         # 10. Generate and execute signals (skip if unhealthy/funding — position monitoring always runs)
-        # Skip signal generation entirely if positions are full
+        # Skip signal generation if positions full OR insufficient margin for min notional
         if len(positions) >= self.config.max_concurrent_positions:
+            _skip_new_trades = True
+        elif portfolio.available_balance < 10:  # Need margin for at least $20 notional at 3x
             _skip_new_trades = True
 
         opened_this_cycle = 0  # Max 1 new position per cycle
@@ -831,6 +835,29 @@ class TradingBot:
                         tranche["type"] = "LIMIT"
                         tranche["price"] = signal.entry_price
 
+                # Close opposite-direction position first (flip instead of hedge)
+                from core.models import Direction
+                for pos in positions:
+                    if pos.symbol == signal.symbol and pos.direction != signal.direction:
+                        logger.info(f"Flipping {signal.symbol}: closing {pos.direction.value} before opening {signal.direction.value}")
+                        close_result = await m["executor"].close_position(pos, OrderType.MARKET)
+                        if close_result.success:
+                            pnl = pos.unrealized_pnl - close_result.fees_paid
+                            self.db.execute(
+                                "UPDATE trades SET status='CLOSED', exit_price=?, exit_time=?, pnl=?, fees=fees+? "
+                                "WHERE symbol=? AND side=? AND status='OPEN'",
+                                (close_result.avg_fill_price, datetime.now(timezone.utc).isoformat(),
+                                 round(pnl, 4), round(close_result.fees_paid, 6),
+                                 pos.symbol, pos.direction.value),
+                            )
+                            self._daily_pnl += pnl
+                            self._daily_fees += close_result.fees_paid
+                            m["notifier"].send(
+                                f"Position Flipped ({pos.direction.value}→{signal.direction.value})",
+                                f"{pos.symbol} closed {pos.direction.value} PnL={pnl:+.4f} | opening {signal.direction.value}",
+                            )
+                        break
+
                 # Execute
                 result = await m["executor"].execute(plan)
                 if result.success:
@@ -858,13 +885,15 @@ class TradingBot:
                     )
                     break  # Max 1 trade per symbol per cycle
 
-        # 11. Check existing positions for SL/TP
+        # 11. Check existing positions for SL/TP (profit protection managed by bot, not exchange TP)
         to_close = m["position_manager"].check_positions()
         for trade in to_close:
             if self.paper_mode:
                 m["position_manager"].close_trade(trade)
             else:
-                await m["position_manager"].close_trade_live(trade)
+                success = await m["position_manager"].close_trade_live(trade)
+                if not success:
+                    continue  # Skip PnL update and notification if close failed
             self._daily_pnl += trade["pnl"]
             self._daily_fees += trade["fees"]
             m["notifier"].send(

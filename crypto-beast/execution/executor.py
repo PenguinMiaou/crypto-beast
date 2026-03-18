@@ -227,21 +227,10 @@ class LiveExecutor:
             except Exception as e:
                 logger.warning(f"SL order failed: {e}")
 
-        # TP take-profit-market orders
-        for tranche in plan.exit_tranches:
-            try:
-                qty = min(tranche["quantity"], filled_qty)
-                qty = self._round_qty(signal.symbol, qty)
-                if qty <= 0:
-                    continue
-                result = await self._place_algo_order(
-                    binance_sym, close_side, position_side,
-                    "TAKE_PROFIT_MARKET", qty, tranche["price"])
-                algo_id = result.get("algoId", "")
-                exit_ids.append(str(algo_id))
-                logger.info(f"TP placed: {close_side} {signal.symbol} {qty} @ {tranche['price']} | algoId={algo_id}")
-            except Exception as e:
-                logger.warning(f"TP order failed: {e}")
+        # TP: NOT placed on exchange — managed by bot's profit protection mechanism.
+        # Reason: exchange TP triggers instant close, then bot re-opens same direction = double fees.
+        # Profit protection tracks peak profit and closes when 50% is given back — more flexible.
+        # Only SL is on exchange (survives bot crash = safety net).
 
         return exit_ids
 

@@ -60,11 +60,11 @@ class PositionManager:
             if current_price <= 0:
                 continue
 
-            # Calculate current profit %
+            # Calculate current profit % (leveraged — what you actually earn/lose)
             if side == "LONG":
-                profit_pct = (current_price - entry_price) / entry_price
+                profit_pct = (current_price - entry_price) / entry_price * leverage
             else:
-                profit_pct = (entry_price - current_price) / entry_price
+                profit_pct = (entry_price - current_price) / entry_price * leverage
 
             # Update peak tracking (persisted to DB so restarts don't lose it)
             peak_profit = self._peak_profits.get(trade_id, 0)
@@ -98,11 +98,21 @@ class PositionManager:
                 reason = "TAKE_PROFIT"
                 exit_price = take_profit
 
-            # 2. Profit protection (unified trailing + drawback)
-            # Activates when profit reaches threshold, closes when profit drops back by X%
+            # 2. Profit protection (tiered — tighter protection at higher profits)
+            # Activates at threshold, max allowed drawback decreases as profit grows
             if reason is None and peak_profit >= self._profit_protect_activation_pct:
+                # Tiered drawback: higher profit = tighter protection
+                if peak_profit >= 0.40:
+                    max_drawback = 0.20  # 40%+ profit: only allow 20% giveback
+                elif peak_profit >= 0.20:
+                    max_drawback = 0.30  # 20-40% profit: allow 30% giveback
+                elif peak_profit >= 0.10:
+                    max_drawback = 0.40  # 10-20% profit: allow 40% giveback
+                else:
+                    max_drawback = self._profit_protect_drawback_pct  # <10%: default (50%)
+
                 drawback = (peak_profit - profit_pct) / peak_profit if peak_profit > 0 else 0
-                if drawback >= self._profit_protect_drawback_pct:
+                if drawback >= max_drawback:
                     reason = "PROFIT_PROTECT"
                     exit_price = current_price
 

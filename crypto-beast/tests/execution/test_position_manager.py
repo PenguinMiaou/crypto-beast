@@ -197,7 +197,7 @@ class TestProfitProtection:
         assert len(result) == 0
 
     def test_profit_protection_not_activated_low_profit(self, db):
-        """Position profits only +1% (below 2% activation) -> no protection."""
+        """Position leveraged PnL only +1.5% (below 2% activation) -> no protection."""
         _insert_trade(db, entry_price=65000.0, stop_loss=None, take_profit=None)
         prices = [None]
 
@@ -206,8 +206,8 @@ class TestProfitProtection:
 
         pm = PositionManager(db, get_price, _make_config())
 
-        # Peak at only +1% (below 2% activation)
-        prices[0] = 65000.0 * 1.01
+        # Peak at +0.3% price = +1.5% leveraged PnL at 5x (below 2% activation)
+        prices[0] = 65000.0 * 1.003
         result = pm.check_positions()
         assert len(result) == 0
 

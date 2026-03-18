@@ -46,10 +46,11 @@ class RiskManager:
             logger.debug("Signal rejected: max positions reached")
             return None
 
-        # Check if already have position in same symbol
+        # Check if already have position in same symbol + same direction
+        # Opposite direction is allowed (caller handles closing the old position first)
         for pos in portfolio.positions:
-            if pos.symbol == signal.symbol:
-                logger.debug(f"Signal rejected: already have position in {signal.symbol}")
+            if pos.symbol == signal.symbol and pos.direction == signal.direction:
+                logger.debug(f"Signal rejected: already have {signal.direction.value} in {signal.symbol}")
                 return None
 
         # Correlation check: reduce confidence for correlated positions
