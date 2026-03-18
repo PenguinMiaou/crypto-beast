@@ -8,7 +8,9 @@ from core.models import DirectionalBias, SignalType
 class SentimentRadar:
     UPDATE_INTERVAL = 300  # 5 min
 
-    def __init__(self):
+    def __init__(self, bullish_threshold: int = 20, bearish_threshold: int = 80):
+        self.bullish_threshold = bullish_threshold
+        self.bearish_threshold = bearish_threshold
         self._fear_greed: Optional[int] = None  # 0-100
         self._long_short_ratio: Optional[float] = None
 
@@ -32,11 +34,11 @@ class SentimentRadar:
         fg = self._fear_greed
         # F&G component (contrarian): extreme fear = buy, extreme greed = sell
         fg_score = 0.0
-        if fg < 20:
-            fg_score = 0.7 * (20 - fg) / 20  # max 0.7
+        if fg < self.bullish_threshold:
+            fg_score = 0.7 * (self.bullish_threshold - fg) / self.bullish_threshold  # max 0.7
             fg_direction = SignalType.BULLISH
-        elif fg > 80:
-            fg_score = 0.7 * (fg - 80) / 20
+        elif fg > self.bearish_threshold:
+            fg_score = 0.7 * (fg - self.bearish_threshold) / (100 - self.bearish_threshold)
             fg_direction = SignalType.BEARISH
         else:
             fg_score = 0.0

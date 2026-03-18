@@ -265,12 +265,31 @@ class WatchdogDaemon:
             self._state.update(claude_calls_today=state["claude_calls_today"] + 1)
 
             duration = int(time.time() - self._claude_lock_time) if self._claude_lock_time else 0
+
+            # Read Claude's fix summary for Telegram
+            fix_summary = ""
+            try:
+                fix_log = "/tmp/claude_fix_output.log"
+                if os.path.exists(fix_log):
+                    with open(fix_log) as f:
+                        content = f.read().strip()
+                    # Take last 500 chars as summary (Claude puts summary at end)
+                    fix_summary = content[-500:] if len(content) > 500 else content
+            except Exception:
+                pass
+
             if success:
-                self._telegram.send("[L2] Claude修复成功，正在重启Bot")
+                msg = f"[L2] Claude修复成功({duration}s)，正在重启Bot"
+                if fix_summary:
+                    msg += f"\n\n修复详情:\n{fix_summary[:800]}"
+                self._telegram.send(msg)
                 self._record_intervention("L2", error_context[:500], "claude_fix", "success", claude_used=True, duration=duration)
                 self.restart_bot("L2 Claude fix applied")
             else:
-                self._telegram.send("[L2-TERMINAL] Claude修复失败，需要人工介入")
+                msg = f"[L2-TERMINAL] Claude修复失败({duration}s)，需要人工介入"
+                if fix_summary:
+                    msg += f"\n\n详情:\n{fix_summary[:800]}"
+                self._telegram.send(msg)
                 self._state.update(status="L2-TERMINAL")
                 self._record_intervention("L2", error_context[:500], "claude_fix", "failed", claude_used=True, duration=duration)
 

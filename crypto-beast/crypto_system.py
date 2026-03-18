@@ -146,10 +146,16 @@ class TradingBot:
             event_engine = EventEngine()
             altcoin_radar = AltcoinRadar()
             pattern_scanner = PatternScanner()
-            whale_tracker = WhaleTracker()
-            sentiment_radar = SentimentRadar()
-            liquidation_hunter = LiquidationHunter()
-            orderbook_sniper = OrderBookSniper()
+            whale_tracker = WhaleTracker(large_trade_threshold=self.config.whale_trade_threshold)
+            sentiment_radar = SentimentRadar(
+                bullish_threshold=self.config.fear_greed_bullish,
+                bearish_threshold=self.config.fear_greed_bearish,
+            )
+            liquidation_hunter = LiquidationHunter(cascade_multiplier=self.config.cascade_multiplier)
+            orderbook_sniper = OrderBookSniper(
+                imbalance_bullish=self.config.orderbook_imbalance_bullish,
+                imbalance_bearish=self.config.orderbook_imbalance_bearish,
+            )
             smart_order = SmartOrder()
 
             # Strategy - weights act as multipliers on confidence
@@ -175,7 +181,8 @@ class TradingBot:
             # Execution
             def get_price(symbol):
                 try:
-                    t = exchange_sync.fetch_ticker(symbol.replace("USDT", "/USDT"))
+                    ccxt_sym = symbol[:-4] + "/USDT" if symbol.endswith("USDT") and "/" not in symbol else symbol
+                    t = exchange_sync.fetch_ticker(ccxt_sym)
                     return t['last']
                 except Exception:
                     return btc_price
@@ -306,10 +313,10 @@ class TradingBot:
             else:
                 # New position — insert
                 self.db.execute(
-                    """INSERT INTO trades (symbol, side, entry_price, quantity, leverage, strategy, entry_time, fees, status)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO trades (symbol, side, entry_price, quantity, leverage, strategy, entry_time, fees, status, stop_loss, take_profit)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (symbol, side, entry_price, abs(amt), leverage, "reconciled",
-                     datetime.now(timezone.utc).isoformat(), 0, "OPEN"))
+                     datetime.now(timezone.utc).isoformat(), 0, "OPEN", 0, 0))
                 logger.info(f"  Added: {side} {symbol} qty={abs(amt)} @ {entry_price} {leverage}x | PnL={unrealized:+.2f}")
 
         # Cancel all open orders to start clean
@@ -435,7 +442,7 @@ class TradingBot:
         success = True
 
         for symbol in data_feed.symbols:
-            ccxt_symbol = symbol.replace("USDT", "/USDT")
+            ccxt_symbol = symbol[:-4] + "/USDT" if symbol.endswith("USDT") and "/" not in symbol else symbol
             for interval in data_feed.intervals:
                 try:
                     import pandas as pd
@@ -528,7 +535,7 @@ class TradingBot:
             # Feed OrderBookSniper with real orderbook data
             orderbook_signal = None
             try:
-                ccxt_symbol = symbol.replace("USDT", "/USDT")
+                ccxt_symbol = symbol[:-4] + "/USDT" if symbol.endswith("USDT") and "/" not in symbol else symbol
                 ob = await self.exchange.fetch_order_book(ccxt_symbol, limit=20)
                 orderbook_signal = m["orderbook_sniper"].get_signal(symbol, {
                     "bids": ob.get("bids", []),
@@ -930,12 +937,11 @@ class TradingBot:
                 logger.info("Running daily trade review")
                 try:
                     trades = self.db.execute(
-                        "SELECT * FROM trades WHERE status = 'CLOSED' AND exit_time >= date('now', '-1 day')"
+                        "SELECT id, side, strategy, pnl, fees FROM trades WHERE status = 'CLOSED' AND exit_time >= datetime('now', '-1 day')"
                     ).fetchall()
                     if trades:
-                        # 列索引: 7=strategy, 10=pnl, 11=fees (匹配database.py schema)
-                        trade_dicts = [{"id": t[0], "pnl": t[10], "fees": t[11], "side": t[2],
-                                       "regime": "RANGING", "strategy": t[7]} for t in trades]
+                        trade_dicts = [{"id": t[0], "pnl": t[3], "fees": t[4], "side": t[1],
+                                       "regime": "RANGING", "strategy": t[2]} for t in trades]
                         report = m["trade_reviewer"].generate_report(trade_dicts)
                         logger.info(f"Daily review: {report.wins}W/{report.losses}L | Recommendations: {report.recommendations[:3]}")
                 except Exception as e:
@@ -947,13 +953,13 @@ class TradingBot:
                 try:
                     # Get yesterday's closed trades for recommendations
                     yesterday_trades = self.db.execute(
-                        "SELECT * FROM trades WHERE status = 'CLOSED' AND exit_time >= date('now', '-1 day')"
+                        "SELECT id, side, strategy, pnl, fees FROM trades WHERE status = 'CLOSED' AND exit_time >= datetime('now', '-1 day')"
                     ).fetchall()
                     trade_dicts = []
                     for t in yesterday_trades:
                         trade_dicts.append({
-                            "id": t[0], "pnl": t[10], "fees": t[11],
-                            "side": t[2], "regime": "RANGING", "strategy": t[7]
+                            "id": t[0], "pnl": t[3], "fees": t[4],
+                            "side": t[1], "regime": "RANGING", "strategy": t[2]
                         })
 
                     # Generate recommendations from actual data
@@ -1017,7 +1023,7 @@ class TradingBot:
             if now.minute % 30 == 0 and now.second < 60:
                 try:
                     for symbol in m["data_feed"].symbols:
-                        ccxt_sym = symbol.replace("USDT", "/USDT")
+                        ccxt_sym = symbol[:-4] + "/USDT" if symbol.endswith("USDT") and "/" not in symbol else symbol
                         funding = await self.exchange.fetch_funding_rate(ccxt_sym)
                         rate = funding.get("fundingRate", 0)
                         m["funding_rate_arb"].update_funding_rate(symbol, rate)
@@ -1030,16 +1036,20 @@ class TradingBot:
                 try:
                     tickers = await self.exchange.fetch_tickers()
                     for symbol, ticker in tickers.items():
-                        if symbol.endswith("/USDT") and symbol != "BTC/USDT":
-                            internal_sym = symbol.replace("/", "")
+                        # Binance Futures ccxt format: "ETH/USDT:USDT"
+                        if symbol.endswith(":USDT") and "/" in symbol and "BTC/USDT" not in symbol:
+                            # Convert "ETH/USDT:USDT" → "ETHUSDT"
+                            internal_sym = symbol.split("/")[0] + "USDT"
                             m["altcoin_radar"].score_coin(
                                 internal_sym,
-                                volume_24h=ticker.get("quoteVolume", 0),
-                                price_change_24h=ticker.get("percentage", 0),
+                                volume_24h=ticker.get("quoteVolume", 0) or 0,
+                                price_change_24h=ticker.get("percentage", 0) or 0,
                             )
                     top_alts = m["altcoin_radar"].get_top_alts()
-                    # Update DataFeed symbols: always BTC + top alts
-                    new_symbols = ["BTCUSDT"] + top_alts
+                    # Always keep BTC + ETH + SOL as base, add top alts
+                    base = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+                    extra = [s for s in top_alts if s not in base]
+                    new_symbols = base + extra[:2]  # Max 5 symbols total
                     m["data_feed"].symbols = new_symbols
                     logger.info(f"AltcoinRadar updated: trading {new_symbols}")
                 except Exception as e:

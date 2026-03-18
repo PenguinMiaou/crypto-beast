@@ -119,6 +119,21 @@
 - FeeOptimizer recommends LIMIT orders when confidence ≤ 0.8 (maker 0.02% vs taker 0.04%)
 - L3 review sends Telegram summary BEFORE updating state counter (state error was silently killing send in daemon thread)
 - macOS scripts: no `timeout` command (use background+kill), no `set -e` (kills EXIT_CODE logging), `claude` needs explicit PATH export
+- Data modules (WhaleTracker/SentimentRadar/LiquidationHunter/OrderBookSniper) accept config params in constructor — never hardcode thresholds
+- SQL: never `SELECT *` with index access — always explicit column names (prevents silent breakage when schema changes)
+- SQL: use `datetime('now', '-1 day')` not `date()` when comparing ISO timestamp strings
+- Symbol conversion: use `symbol[:-4] + "/USDT"` with `endswith("USDT")` guard, never `.replace("USDT", "/USDT")`
+- Binance Futures ccxt ticker format: `ETH/USDT:USDT` (not `ETH/USDT`) — use `endswith(":USDT")` to match
+- Reconciliation INSERT must include stop_loss/take_profit columns (default 0)
+- After completing work: always update CLAUDE.md, 策略详解.md, and git tag+release
+
+## Versioning
+- Semantic versioning: vMAJOR.MINOR.PATCH (e.g., v1.1.0)
+- MAJOR: breaking changes or major architecture rework
+- MINOR: new features, significant improvements (e.g., DefenseManager, signal pipeline)
+- PATCH: bug fixes, small tweaks (e.g., fix -2022 handling, fix timeout)
+- Tag + GitHub release for every MINOR/MAJOR bump; PATCH optional
+- Current: v1.2.0 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
 
 ## Architecture
 - 7-layer async trading system for Binance USDT-M Futures

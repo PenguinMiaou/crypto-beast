@@ -33,7 +33,10 @@ class DataFeed:
         if self.rate_limiter:
             await self.rate_limiter.acquire_data_slot()
         try:
-            ccxt_symbol = symbol.replace("USDT", "/USDT")
+            if symbol.endswith("USDT") and "/" not in symbol:
+                ccxt_symbol = symbol[:-4] + "/USDT"
+            else:
+                ccxt_symbol = symbol
             ohlcv = await self._exchange.fetch_ohlcv(ccxt_symbol, interval, limit=limit)
 
             df = pd.DataFrame(ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"])

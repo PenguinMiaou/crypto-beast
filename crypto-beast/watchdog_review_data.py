@@ -66,7 +66,7 @@ def extract(db_path: str, date: str, output_dir: str) -> None:
     # BTC daily klines for benchmark
     try:
         rows = conn.execute(
-            "SELECT * FROM klines WHERE symbol='BTCUSDT' AND timeframe='1d' ORDER BY timestamp DESC LIMIT 30"
+            "SELECT * FROM klines WHERE symbol='BTCUSDT' AND interval='1d' ORDER BY open_time DESC LIMIT 30"
         ).fetchall()
         _save(output_dir, "btc_daily.json", [dict(r) for r in rows])
     except Exception:
