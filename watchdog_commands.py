@@ -60,6 +60,7 @@ class WatchdogCommands:
             "/deldirective": self._cmd_deldirective,
             "/cost": self._cmd_cost,
             "/version": self._cmd_version,
+            "/resetpeak": self._cmd_resetpeak,
         }
         handler = handlers.get(command)
         if handler:
@@ -93,7 +94,8 @@ class WatchdogCommands:
             "/directive — 设置策略方向\n"
             "/directives — 查看指令\n"
             "/cost — Token消耗\n"
-            "/version — 策略版本"
+            "/version — 策略版本\n"
+            "/resetpeak — 重置熔断基准(出入金后用)"
         )
 
     def _cmd_status(self, args: List[str]) -> None:
@@ -513,6 +515,44 @@ class WatchdogCommands:
             )
         except Exception as e:
             self._telegram.send(f"读取失败: {e}")
+
+    def _cmd_resetpeak(self, args: List[str]) -> None:
+        """Reset circuit breaker peak wallet to current wallet balance."""
+        try:
+            import hmac, hashlib, time as _time, json as _json
+            from urllib.parse import urlencode
+
+            # Get current wallet balance from Binance
+            ts = int(_time.time() * 1000)
+            params = {"timestamp": ts}
+            query = urlencode(params)
+            sig = hmac.new(self._api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+            url = f"https://fapi.binance.com/fapi/v2/account?{query}&signature={sig}"
+
+            import urllib.request
+            req = urllib.request.Request(url, headers={"X-MBX-APIKEY": self._api_key})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = _json.loads(resp.read())
+            wallet = float(data.get("totalWalletBalance", 0))
+
+            # Update DB: delete old peak markers, insert new one
+            conn = sqlite3.connect(self._db_path)
+            conn.execute("DELETE FROM equity_snapshots WHERE unrealized_pnl = -1")
+            conn.execute(
+                "INSERT INTO equity_snapshots (timestamp, equity, unrealized_pnl) VALUES (?, ?, -1)",
+                (datetime.now(timezone.utc).isoformat(), wallet))
+            conn.commit()
+            conn.close()
+
+            new_floor = wallet * 0.80
+            self._telegram.send(
+                f"Peak 已重置\n\n"
+                f"新基准: ${wallet:.2f}\n"
+                f"熔断底线: ${new_floor:.2f} (80%)\n\n"
+                f"下次重启后生效。如需立即生效请 /restart"
+            )
+        except Exception as e:
+            self._telegram.send(f"重置失败: {e}")
 
     def _cmd_version(self, args: List[str]) -> None:
         rows = self._query_db(
