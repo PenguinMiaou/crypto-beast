@@ -304,11 +304,19 @@ class TradingBot:
             exchange_keys.add((pos["symbol"], side))
 
         # Remove stale DB trades not on exchange (match by symbol+side)
+        executor = self.modules.get("executor")
         for symbol, side in db_keys - exchange_keys:
             self.db.execute(
                 "UPDATE trades SET status='CLOSED', exit_time=?, exit_price=entry_price, pnl=0 "
                 "WHERE symbol=? AND side=? AND status='OPEN'",
                 (datetime.now(timezone.utc).isoformat(), symbol, side))
+            # Cancel orphaned algo orders for this closed position
+            if executor and hasattr(executor, "cancel_algo_orders"):
+                binance_sym = symbol if symbol.endswith("USDT") else symbol + "USDT"
+                try:
+                    await executor.cancel_algo_orders(binance_sym, side)
+                except Exception as e:
+                    logger.warning(f"Failed to cancel algo orders for stale {symbol} {side}: {e}")
             logger.info(f"  Closed stale: {side} {symbol} (not on exchange)")
 
         for pos in positions:
@@ -381,6 +389,16 @@ class TradingBot:
                     position_manager._peak_prices[trade_id] = row[3]
             if rows:
                 logger.info(f"Initialized peak tracking for {len(rows)} reconciled positions")
+
+        # Ensure all open positions have SL protection on exchange
+        executor = self.modules.get("executor")
+        if executor and hasattr(executor, "ensure_sl_orders"):
+            try:
+                placed = await executor.ensure_sl_orders(self.db)
+                if placed:
+                    logger.info(f"Placed {placed} missing SL orders on startup")
+            except Exception as e:
+                logger.warning(f"ensure_sl_orders failed: {e}")
 
         logger.info(f"Reconciliation complete: {len(positions)} positions synced")
 

@@ -406,6 +406,14 @@ class LiveExecutor:
 
             fees = filled_qty * fill_price * self.TAKER_FEE
 
+            # Cancel any remaining algo orders (SL) for this symbol+side
+            binance_sym = self._to_binance_symbol(position.symbol)
+            pos_side = "LONG" if position.direction == Direction.LONG else "SHORT"
+            try:
+                await self.cancel_algo_orders(binance_sym, pos_side)
+            except Exception as e:
+                logger.warning(f"Failed to cancel algo orders for {position.symbol}: {e}")
+
             return ExecutionResult(
                 success=True, order_ids=[str(result.get("orderId", ""))],
                 avg_fill_price=fill_price, total_filled=filled_qty,
@@ -418,6 +426,13 @@ class LiveExecutor:
             # doesn't try to open a new position in the same cycle.
             if "-2022" in error_str:
                 logger.info(f"Position {position.symbol} already closed on exchange (SL/TP triggered)")
+                # Position closed by exchange SL — cancel remaining algo orders too
+                binance_sym = self._to_binance_symbol(position.symbol)
+                pos_side = "LONG" if position.direction == Direction.LONG else "SHORT"
+                try:
+                    await self.cancel_algo_orders(binance_sym, pos_side)
+                except Exception:
+                    pass
                 return ExecutionResult(
                     success=False, order_ids=[], avg_fill_price=0,
                     total_filled=0, fees_paid=0, slippage=0,
@@ -428,8 +443,91 @@ class LiveExecutor:
                 total_filled=0, fees_paid=0, slippage=0, error=error_str,
             )
 
+    async def cancel_algo_orders(self, symbol: Optional[str] = None,
+                                 position_side: Optional[str] = None) -> int:
+        """Cancel open algo orders (SL/TP conditional orders).
+
+        Args:
+            symbol: Binance symbol (e.g. 'BTCUSDT'). If None, cancels ALL open algo orders.
+            position_side: 'LONG' or 'SHORT'. If set, only cancel orders matching this side.
+                           Important in hedge mode to avoid cancelling the other side's SL.
+
+        Returns:
+            Number of algo orders cancelled.
+        """
+        import aiohttp, hmac, hashlib, time as _time
+        from urllib.parse import urlencode
+        from dotenv import dotenv_values
+
+        env = dotenv_values(str(Path(__file__).parent.parent / ".env"))
+        api_key = env.get("BINANCE_API_KEY", "")
+        api_secret = env.get("BINANCE_API_SECRET", "")
+
+        # Step 1: Query open algo orders
+        query_params: Dict[str, object] = {
+            "timestamp": int(_time.time() * 1000),
+        }
+        if symbol:
+            query_params["symbol"] = symbol
+        query = urlencode(query_params)
+        signature = hmac.new(api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+        url = f"https://fapi.binance.com/fapi/v1/openAlgoOrders?{query}&signature={signature}"
+
+        cancelled = 0
+        try:
+            await self.rate_limiter.acquire_order_slot()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers={"X-MBX-APIKEY": api_key}) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"Failed to query algo orders: {await resp.text()}")
+                        return 0
+                    data = await resp.json()
+
+            orders = data if isinstance(data, list) else data.get("orders", [])
+
+            # Filter by positionSide if specified (hedge mode: don't cancel other side)
+            if position_side:
+                orders = [o for o in orders if o.get("positionSide") == position_side]
+
+            if not orders:
+                return 0
+
+            logger.info(f"Found {len(orders)} algo orders to cancel"
+                        f"{f' for {symbol}' if symbol else ''}"
+                        f"{f' {position_side}' if position_side else ''}")
+
+            # Step 2: Cancel each algo order
+            for order in orders:
+                algo_id = order.get("algoId")
+                if not algo_id:
+                    continue
+                try:
+                    cancel_params = {
+                        "algoId": algo_id,
+                        "timestamp": int(_time.time() * 1000),
+                    }
+                    cquery = urlencode(cancel_params)
+                    csig = hmac.new(api_secret.encode(), cquery.encode(), hashlib.sha256).hexdigest()
+                    curl = f"https://fapi.binance.com/fapi/v1/algoOrder?{cquery}&signature={csig}"
+
+                    await self.rate_limiter.acquire_order_slot()
+                    async with aiohttp.ClientSession() as session:
+                        async with session.delete(curl, headers={"X-MBX-APIKEY": api_key}) as cresp:
+                            if cresp.status == 200:
+                                cancelled += 1
+                            else:
+                                logger.warning(f"Failed to cancel algoId={algo_id}: {await cresp.text()}")
+                except Exception as e:
+                    logger.warning(f"Error cancelling algoId={algo_id}: {e}")
+
+            logger.info(f"Cancelled {cancelled}/{len(orders)} algo orders")
+        except Exception as e:
+            logger.error(f"cancel_algo_orders error: {e}")
+
+        return cancelled
+
     async def cancel_all_pending(self) -> None:
-        """Cancel all open orders for all traded symbols."""
+        """Cancel all open orders (regular + algo) for all traded symbols."""
         symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
                     "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT"]
         for sym in symbols:
@@ -439,3 +537,91 @@ class LiveExecutor:
                 await self.exchange.cancel_all_orders(ccxt_sym)
             except Exception:
                 pass  # No open orders for this symbol is fine
+        # Also cancel all algo orders (SL/TP conditional orders)
+        await self.cancel_algo_orders()
+
+    async def ensure_sl_orders(self, db: Database) -> int:
+        """Check open positions and place missing SL algo orders.
+
+        Called on startup after reconciliation to ensure all positions have
+        exchange-level SL protection. Returns number of SL orders placed.
+        """
+        import aiohttp, hmac, hashlib, time as _time
+        from urllib.parse import urlencode
+        from dotenv import dotenv_values
+
+        env = dotenv_values(str(Path(__file__).parent.parent / ".env"))
+        api_key = env.get("BINANCE_API_KEY", "")
+        api_secret = env.get("BINANCE_API_SECRET", "")
+
+        # Step 1: Get open algo orders to know which positions already have SL
+        query_params = {"timestamp": int(_time.time() * 1000)}
+        query = urlencode(query_params)
+        signature = hmac.new(api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+        url = f"https://fapi.binance.com/fapi/v1/openAlgoOrders?{query}&signature={signature}"
+
+        existing_sl = set()  # (symbol, positionSide) that already have SL
+        try:
+            await self.rate_limiter.acquire_order_slot()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers={"X-MBX-APIKEY": api_key}) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        orders = data if isinstance(data, list) else data.get("orders", [])
+                        for o in orders:
+                            existing_sl.add((o.get("symbol"), o.get("positionSide")))
+        except Exception as e:
+            logger.warning(f"Failed to query existing algo orders: {e}")
+
+        # Step 2: Get open trades from DB
+        DEFAULT_SL_PCT = 0.03  # 3% default SL for positions without one
+        rows = db.execute(
+            "SELECT symbol, side, quantity, stop_loss, entry_price FROM trades WHERE status = 'OPEN'"
+        ).fetchall()
+
+        placed = 0
+        for row in rows:
+            symbol, side, qty, stop_loss, entry_price = row[0], row[1], row[2], row[3], row[4]
+            position_side = side  # LONG or SHORT
+            binance_sym = self._to_binance_symbol(symbol)
+
+            # Skip if already has SL on exchange
+            if (binance_sym, position_side) in existing_sl:
+                logger.info(f"SL already exists for {symbol} {side}, skipping")
+                continue
+
+            # Calculate default SL if missing
+            if not stop_loss or stop_loss <= 0:
+                if not entry_price or entry_price <= 0:
+                    logger.warning(f"No SL or entry price for {symbol} {side}, cannot place SL")
+                    continue
+                if side == "LONG":
+                    stop_loss = round(entry_price * (1 - DEFAULT_SL_PCT), 2)
+                else:
+                    stop_loss = round(entry_price * (1 + DEFAULT_SL_PCT), 2)
+                logger.info(f"Using default {DEFAULT_SL_PCT*100}% SL for {symbol} {side}: {stop_loss}")
+                # Update DB so it's not 0 anymore
+                db.execute(
+                    "UPDATE trades SET stop_loss = ? WHERE symbol = ? AND side = ? AND status = 'OPEN'",
+                    (stop_loss, symbol, side)
+                )
+
+            close_side = "SELL" if side == "LONG" else "BUY"
+            rounded_qty = self._round_qty(symbol, qty)
+
+            try:
+                result = await self._place_algo_order(
+                    binance_sym, close_side, position_side,
+                    "STOP_MARKET", rounded_qty, stop_loss)
+                algo_id = result.get("algoId", "")
+                logger.info(f"SL补下: {close_side} {symbol} {rounded_qty} @ stop={stop_loss} | algoId={algo_id}")
+                placed += 1
+            except Exception as e:
+                logger.warning(f"Failed to place SL for {symbol} {side}: {e}")
+
+        if placed:
+            logger.info(f"ensure_sl_orders: placed {placed} missing SL orders")
+        else:
+            logger.info("ensure_sl_orders: all positions have SL protection")
+
+        return placed

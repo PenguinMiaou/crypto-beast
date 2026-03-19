@@ -54,7 +54,12 @@
 - `fetch_positions()` — use `fapiPrivateV2GetAccount` (ccxt wrapper has NoneType issues)
 - close_position() returning -2022 = position already closed by exchange SL/TP → treat as success, not error
 - `cancel_all_orders()` requires symbol argument on Binance Futures — must iterate per symbol
-- Algo Orders have per-account limit — -4045 "Reach max stop order limit" means too many SL/TP orders
+- Algo Orders have per-account limit (200) — -4045 "Reach max stop order limit" means too many SL/TP orders
+- Algo Order cleanup: `close_position()` cancels algo orders for same symbol+positionSide after closing
+- Algo Order query: GET `/fapi/v1/openAlgoOrders` (NOT `/fapi/v1/algoOrders/openOrders`); returns list directly
+- Algo Order cancel: DELETE `/fapi/v1/algoOrder` with `algoId` param
+- `cancel_algo_orders(symbol, position_side)` — filters by positionSide to avoid cancelling other direction in hedge mode
+- `ensure_sl_orders()` on startup: checks all positions have exchange SL, places missing ones (default 3% if DB has sl=0)
 - In hedge mode, SELL with positionSide=LONG on empty position = -2022 (not -2019)
 
 ## Reconciliation
@@ -133,7 +138,7 @@
 - MINOR: new features, significant improvements (e.g., DefenseManager, signal pipeline)
 - PATCH: bug fixes, small tweaks (e.g., fix -2022 handling, fix timeout)
 - Tag + GitHub release for every MINOR/MAJOR bump; PATCH optional
-- Current: v1.5.1 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
+- Current: v1.5.2 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
 
 ## Architecture
 - 7-layer async trading system for Binance USDT-M Futures
