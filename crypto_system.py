@@ -306,7 +306,8 @@ class TradingBot:
         # Remove stale DB trades not on exchange (match by symbol+side)
         for symbol, side in db_keys - exchange_keys:
             self.db.execute(
-                "UPDATE trades SET status='CLOSED', exit_time=? WHERE symbol=? AND side=? AND status='OPEN'",
+                "UPDATE trades SET status='CLOSED', exit_time=?, exit_price=entry_price, pnl=0 "
+                "WHERE symbol=? AND side=? AND status='OPEN'",
                 (datetime.now(timezone.utc).isoformat(), symbol, side))
             logger.info(f"  Closed stale: {side} {symbol} (not on exchange)")
 
