@@ -665,8 +665,33 @@ class TradingBot:
 
         recovery_params = defense_result.params
 
-        # 7-9: Preparation for signal generation
+        # 7. Check existing positions FIRST (before opening new ones)
+        to_close = m["position_manager"].check_positions()
+        closed_this_cycle = False
+        for trade in to_close:
+            if self.paper_mode:
+                m["position_manager"].close_trade(trade)
+            else:
+                success = await m["position_manager"].close_trade_live(trade)
+                if not success:
+                    continue
+            closed_this_cycle = True
+            self._daily_pnl += trade["pnl"]
+            self._daily_fees += trade["fees"]
+            m["notifier"].send(
+                f"Trade Closed ({trade['reason']})",
+                f"{trade['side']} {trade['symbol']} | Entry=${trade['entry_price']:,.2f} → "
+                f"Exit=${trade['exit_price']:,.2f} | PnL={trade['pnl']:+.4f} | {trade['strategy']}",
+                level="warning" if trade["reason"] == "STOP_LOSS" else "info",
+            )
+
+        # 8-10: Preparation for signal generation
         _skip_new_trades = not system_healthy
+
+        # If we closed positions this cycle, skip opening new ones
+        # (let margin settle, exchange state update, avoid ghost orders)
+        if closed_this_cycle:
+            _skip_new_trades = True
 
         if m["event_engine"].should_reduce_exposure():
             logger.debug("Near funding settlement, skipping new entries")
@@ -915,23 +940,7 @@ class TradingBot:
                     )
                     break  # Max 1 trade per symbol per cycle
 
-        # 11. Check existing positions for SL/TP (profit protection managed by bot, not exchange TP)
-        to_close = m["position_manager"].check_positions()
-        for trade in to_close:
-            if self.paper_mode:
-                m["position_manager"].close_trade(trade)
-            else:
-                success = await m["position_manager"].close_trade_live(trade)
-                if not success:
-                    continue  # Skip PnL update and notification if close failed
-            self._daily_pnl += trade["pnl"]
-            self._daily_fees += trade["fees"]
-            m["notifier"].send(
-                f"Trade Closed ({trade['reason']})",
-                f"{trade['side']} {trade['symbol']} | Entry=${trade['entry_price']:,.2f} → "
-                f"Exit=${trade['exit_price']:,.2f} | PnL={trade['pnl']:+.4f} | {trade['strategy']}",
-                level="warning" if trade["reason"] == "STOP_LOSS" else "info",
-            )
+        # 11. Position monitoring already done in step 7 above
 
         # 12. Update compound sizing
         m["compound_engine"].update_position_sizing(portfolio)
