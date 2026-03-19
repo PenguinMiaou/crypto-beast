@@ -195,12 +195,12 @@ class PositionManager:
                 )
                 return True
             elif result.error == "already_closed":
-                # Position was already closed by exchange SL — mark CLOSED in DB
+                # Position was already closed by exchange SL — mark CLOSED in DB with estimated PnL
                 self.db.execute(
-                    "UPDATE trades SET exit_time = ?, status = 'CLOSED' WHERE id = ?",
-                    (datetime.now(timezone.utc).isoformat(), trade["trade_id"])
+                    "UPDATE trades SET exit_time = ?, exit_price = ?, pnl = ?, status = 'CLOSED' WHERE id = ?",
+                    (datetime.now(timezone.utc).isoformat(), trade["exit_price"], trade["pnl"], trade["trade_id"])
                 )
-                logger.info(f"Marked {trade['symbol']} as CLOSED in DB (exchange SL already triggered)")
+                logger.info(f"Marked {trade['symbol']} as CLOSED in DB (exchange SL) PnL={trade['pnl']:+.4f}")
                 return True
             else:
                 logger.error(f"Live close failed: {result.error}")
