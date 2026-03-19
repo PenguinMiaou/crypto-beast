@@ -44,6 +44,8 @@ class TradingBot:
         self.exchange = None
         self.modules = {}
         self._peak_equity = 100.0
+        self._peak_wallet = 100.0  # Historical peak wallet balance (for circuit breaker)
+        self._circuit_breaker_triggered = False
         self._daily_pnl = 0.0
         self._daily_fees = 0.0
         self._cycle_count = 0
@@ -132,6 +134,19 @@ class TradingBot:
                 logger.info(f"Peak equity restored: ${self._peak_equity:.2f}")
             except Exception:
                 self._peak_equity = wallet
+
+            # Circuit breaker: track peak wallet balance (only realized PnL + deposits)
+            # Persisted in DB as a special equity_snapshot with equity=-1 marker
+            try:
+                db_peak_wallet = self.db.execute(
+                    "SELECT MAX(equity) FROM equity_snapshots WHERE unrealized_pnl = -1"
+                ).fetchone()[0]
+                self._peak_wallet = max(wallet, db_peak_wallet or wallet)
+            except Exception:
+                self._peak_wallet = wallet
+            self._circuit_breaker_triggered = False
+            circuit_floor = self._peak_wallet * self.config.circuit_breaker_pct
+            logger.info(f"Circuit breaker: peak wallet ${self._peak_wallet:.2f}, floor ${circuit_floor:.2f} (80%)")
 
             # DataFeed
             # Default symbols: BTC + top altcoins
@@ -610,10 +625,60 @@ class TradingBot:
 
         # Get real equity from Binance (ground truth, not DB calculation)
         available_balance = 0
+        wallet_balance = 0
         try:
             account = await self.exchange.fapiPrivateV2GetAccount()
             equity = float(account.get("totalMarginBalance", 0))
             available_balance = float(account.get("availableBalance", 0))
+            wallet_balance = float(account.get("totalWalletBalance", 0))
+
+            # Update peak wallet (only goes up — deposits + realized gains)
+            if wallet_balance > self._peak_wallet:
+                self._peak_wallet = wallet_balance
+                # Persist to DB
+                try:
+                    self.db.execute(
+                        "INSERT INTO equity_snapshots (timestamp, equity, unrealized_pnl) VALUES (?, ?, -1)",
+                        (datetime.now(timezone.utc).isoformat(), wallet_balance))
+                except Exception:
+                    pass
+
+            # CIRCUIT BREAKER: wallet below 80% of peak → emergency close + halt
+            circuit_floor = self._peak_wallet * self.config.circuit_breaker_pct
+            if wallet_balance < circuit_floor and not self._circuit_breaker_triggered:
+                self._circuit_breaker_triggered = True
+                logger.critical(
+                    f"CIRCUIT BREAKER: wallet ${wallet_balance:.2f} < floor ${circuit_floor:.2f} "
+                    f"(80% of peak ${self._peak_wallet:.2f})"
+                )
+                positions = await m["executor"].get_positions()
+                await self._emergency_close(positions)
+                m["notifier"].send(
+                    "CIRCUIT BREAKER",
+                    f"熔断触发！钱包 ${wallet_balance:.2f} 低于安全底线 ${circuit_floor:.2f}\n"
+                    f"(历史最高 ${self._peak_wallet:.2f} 的 80%)\n"
+                    f"所有仓位已平仓，交易已停止。\n"
+                    f"发送 /resume 手动恢复交易。",
+                    level="critical",
+                )
+                # Write paused state so bot stays stopped across restarts
+                try:
+                    import json as _json
+                    _state_path = os.path.join(os.path.dirname(__file__), "watchdog.state")
+                    with open(_state_path, "r+") as _f:
+                        _wstate = _json.load(_f)
+                        _wstate["paused"] = True
+                        _f.seek(0)
+                        _f.truncate()
+                        _json.dump(_wstate, _f)
+                except Exception:
+                    pass
+                return
+
+            if self._circuit_breaker_triggered:
+                # Stay halted until user manually /resume
+                return
+
         except Exception:
             # Fallback to DB calculation if API fails
             closed_pnl = self.db.execute(

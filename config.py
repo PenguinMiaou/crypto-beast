@@ -21,6 +21,7 @@ class Config:
     max_concurrent_positions: int = 3
     max_daily_loss: float = 0.10
     max_total_drawdown: float = 0.30
+    circuit_breaker_pct: float = 0.80  # Emergency close if wallet < 80% of peak wallet
 
     # Recovery thresholds
     recovery_cautious: float = 0.05
