@@ -278,15 +278,22 @@ class TradingBot:
         positions = [p for p in account.get("positions", []) if float(p.get("positionAmt", 0)) != 0]
 
         db_trades = self.db.execute(
-            "SELECT id, symbol FROM trades WHERE status = 'OPEN'"
+            "SELECT id, symbol, side FROM trades WHERE status = 'OPEN'"
         ).fetchall()
-        db_symbols = {row[1] for row in db_trades}
-        exchange_symbols = {pos["symbol"] for pos in positions}
+        # Track by symbol+side for hedge mode
+        db_keys = {(row[1], row[2]) for row in db_trades}
+        exchange_keys = set()
+        for pos in positions:
+            amt = float(pos.get("positionAmt", 0))
+            side = "LONG" if amt > 0 else "SHORT"
+            exchange_keys.add((pos["symbol"], side))
 
-        # Remove stale DB trades not on exchange
-        for symbol in db_symbols - exchange_symbols:
-            self.db.execute("DELETE FROM trades WHERE symbol = ? AND status = 'OPEN'", (symbol,))
-            logger.info(f"  Removed stale: {symbol}")
+        # Remove stale DB trades not on exchange (match by symbol+side)
+        for symbol, side in db_keys - exchange_keys:
+            self.db.execute(
+                "UPDATE trades SET status='CLOSED', exit_time=? WHERE symbol=? AND side=? AND status='OPEN'",
+                (datetime.now(timezone.utc).isoformat(), symbol, side))
+            logger.info(f"  Closed stale: {side} {symbol} (not on exchange)")
 
         for pos in positions:
             symbol = pos["symbol"]
@@ -296,35 +303,40 @@ class TradingBot:
             leverage = int(pos.get("leverage", 1))
             unrealized = float(pos.get("unrealizedProfit", 0))
 
-            # Count how many OPEN records exist for this symbol
+            # Match by symbol+side
             open_count = self.db.execute(
-                "SELECT COUNT(*) FROM trades WHERE symbol=? AND status='OPEN'", (symbol,)
+                "SELECT COUNT(*) FROM trades WHERE symbol=? AND side=? AND status='OPEN'", (symbol, side)
             ).fetchone()[0]
 
             if open_count == 1:
                 # Exactly one record — update it, keep SL/TP/strategy
                 self.db.execute(
-                    "UPDATE trades SET quantity=?, entry_price=?, leverage=? WHERE symbol=? AND status='OPEN'",
-                    (abs(amt), entry_price, leverage, symbol))
+                    "UPDATE trades SET quantity=?, entry_price=?, leverage=? WHERE symbol=? AND side=? AND status='OPEN'",
+                    (abs(amt), entry_price, leverage, symbol, side))
                 logger.info(f"  Synced: {side} {symbol} qty={abs(amt)} @ {entry_price} | PnL={unrealized:+.2f}")
             elif open_count > 1:
                 # Duplicates — keep earliest, delete rest, then update
                 self.db.execute(
-                    "DELETE FROM trades WHERE status='OPEN' AND symbol=? AND id NOT IN "
-                    "(SELECT MIN(id) FROM trades WHERE status='OPEN' AND symbol=?)",
-                    (symbol, symbol))
+                    "DELETE FROM trades WHERE status='OPEN' AND symbol=? AND side=? AND id NOT IN "
+                    "(SELECT MIN(id) FROM trades WHERE status='OPEN' AND symbol=? AND side=?)",
+                    (symbol, side, symbol, side))
                 self.db.execute(
-                    "UPDATE trades SET quantity=?, entry_price=?, leverage=? WHERE symbol=? AND status='OPEN'",
-                    (abs(amt), entry_price, leverage, symbol))
+                    "UPDATE trades SET quantity=?, entry_price=?, leverage=? WHERE symbol=? AND side=? AND status='OPEN'",
+                    (abs(amt), entry_price, leverage, symbol, side))
                 logger.info(f"  Deduped+Synced: {side} {symbol} (removed {open_count - 1} duplicates)")
             else:
-                # New position — insert
+                # New position — try to inherit strategy from most recent CLOSED trade of same symbol+side
+                last_strategy = self.db.execute(
+                    "SELECT strategy FROM trades WHERE symbol=? AND side=? AND status='CLOSED' AND strategy != 'reconciled' ORDER BY id DESC LIMIT 1",
+                    (symbol, side)
+                ).fetchone()
+                strategy = last_strategy[0] if last_strategy else "reconciled"
                 self.db.execute(
                     """INSERT INTO trades (symbol, side, entry_price, quantity, leverage, strategy, entry_time, fees, status, stop_loss, take_profit)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (symbol, side, entry_price, abs(amt), leverage, "reconciled",
+                    (symbol, side, entry_price, abs(amt), leverage, strategy,
                      datetime.now(timezone.utc).isoformat(), 0, "OPEN", 0, 0))
-                logger.info(f"  Added: {side} {symbol} qty={abs(amt)} @ {entry_price} {leverage}x | PnL={unrealized:+.2f}")
+                logger.info(f"  Added: {side} {symbol} qty={abs(amt)} @ {entry_price} {leverage}x | strategy={strategy} | PnL={unrealized:+.2f}")
 
         # Cancel all open orders to start clean
         try:
