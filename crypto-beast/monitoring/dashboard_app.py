@@ -218,9 +218,23 @@ with tab5:
     with col2:
         st.write("**Bot Config**")
         st.write("Mode: LIVE" if os.path.exists(str(DB_PATH)) else "Not running")
-        st.write("Symbols: BTC, ETH, SOL")
-        st.write("Max Leverage: 5x")
-        st.write("Max Positions: 3")
+        st.write("Symbols: BTC, ETH, SOL (+auto alts)")
+        # Read defense state from shield.state
+        try:
+            import json as _json
+            shield_path = os.path.join(os.path.dirname(DB_PATH), "shield.state")
+            if os.path.exists(shield_path):
+                with open(shield_path) as f:
+                    shield = _json.load(f)
+                if shield.get("halted"):
+                    st.write("Defense: **HALTED** ⚠️")
+            # Read max_leverage from config
+            from config import Config
+            cfg = Config()
+            st.write(f"Max Leverage: {cfg.max_leverage}x (config)")
+        except Exception:
+            st.write("Max Leverage: 10x")
+        st.write(f"Max Positions: 3")
 
     # Recent activity from DB
     if db:

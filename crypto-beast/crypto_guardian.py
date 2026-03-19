@@ -327,14 +327,24 @@ class WatchdogDaemon:
                 capture_output=True, text=True,
                 timeout=600,  # 10 minutes
             )
-            # Send Telegram summary FIRST (before state update which could fail)
+            # Send Telegram summary FIRST (with retries for network timeout)
             summary_file = os.path.join(self._base_dir, "review_data", "telegram_summary.txt")
             try:
                 if os.path.exists(summary_file):
                     with open(summary_file) as f:
                         summary = f.read().strip()
                     if summary:
-                        self._telegram.send(f"[L3] {review_type}复盘完成:\n{summary}")
+                        sent = False
+                        for attempt in range(3):
+                            try:
+                                self._telegram.send(f"[L3] {review_type}复盘完成:\n{summary}")
+                                sent = True
+                                break
+                            except Exception:
+                                import time as _time
+                                _time.sleep(10)  # Wait 10s before retry
+                        if not sent:
+                            logger.error(f"Failed to send review summary after 3 attempts")
                     os.remove(summary_file)
                 else:
                     self._telegram.send(f"[L3] {review_type}复盘完成")

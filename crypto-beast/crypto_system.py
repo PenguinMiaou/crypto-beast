@@ -124,7 +124,14 @@ class TradingBot:
             wallet = float(account.get('totalWalletBalance', 0))
             logger.info(f"Futures wallet: {wallet:.2f} USDT")
             self.config.starting_capital = wallet
-            self._peak_equity = wallet
+
+            # Restore peak equity from DB (survives restarts)
+            try:
+                db_peak = self.db.execute("SELECT MAX(equity) FROM equity_snapshots").fetchone()[0]
+                self._peak_equity = max(wallet, db_peak or wallet)
+                logger.info(f"Peak equity restored: ${self._peak_equity:.2f}")
+            except Exception:
+                self._peak_equity = wallet
 
             # DataFeed
             # Default symbols: BTC + top altcoins
@@ -1098,16 +1105,11 @@ class TradingBot:
                     except Exception as e:
                         logger.error(f"Backup failed: {e}")
 
-            # Equity snapshot every hour
+            # Equity snapshot every hour (from Binance API, not DB)
             if now.minute == 0 and self.db:
                 try:
-                    closed_pnl = self.db.execute(
-                        "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status = 'CLOSED'"
-                    ).fetchone()[0]
-                    open_fees = self.db.execute(
-                        "SELECT COALESCE(SUM(fees), 0) FROM trades WHERE status = 'OPEN'"
-                    ).fetchone()[0]
-                    snap_equity = self.config.starting_capital + closed_pnl - open_fees
+                    account = await self.exchange.fapiPrivateV2GetAccount()
+                    snap_equity = float(account.get("totalMarginBalance", 0))
                     self.db.execute(
                         "INSERT INTO equity_snapshots (timestamp, equity) VALUES (?, ?)",
                         (now.isoformat(), snap_equity))
@@ -1135,16 +1137,11 @@ class TradingBot:
         except Exception as e:
             logger.error(f"Failed to cancel orders: {e}")
 
-        # Save equity snapshot
-        if self.db:
+        # Save equity snapshot (from Binance API)
+        if self.db and self.exchange:
             try:
-                closed_pnl = self.db.execute(
-                    "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status = 'CLOSED'"
-                ).fetchone()[0]
-                open_fees = self.db.execute(
-                    "SELECT COALESCE(SUM(fees), 0) FROM trades WHERE status = 'OPEN'"
-                ).fetchone()[0]
-                snap_equity = self.config.starting_capital + closed_pnl - open_fees
+                account = await self.exchange.fapiPrivateV2GetAccount()
+                snap_equity = float(account.get("totalMarginBalance", 0))
                 self.db.execute(
                     "INSERT INTO equity_snapshots (timestamp, equity) VALUES (?, ?)",
                     (datetime.now(timezone.utc).isoformat(), snap_equity))

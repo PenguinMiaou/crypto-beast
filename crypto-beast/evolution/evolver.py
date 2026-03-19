@@ -76,12 +76,15 @@ class Evolver:
     def update_strategy_weights(self, new_weights: Dict[str, float]) -> None:
         self._strategy_weights.update(new_weights)
 
-    async def run_daily_evolution(self, data: dict = None, recommendations: List[str] = None) -> Optional[EvolutionReport]:
-        """Run daily parameter optimization using Optuna.
+    # Minimum closed trades before enabling Optuna parameter optimization
+    MIN_TRADES_FOR_OPTUNA = 30
 
-        Args:
-            data: {symbol: DataFrame} market data for backtesting
-            recommendations: from TradeReviewer (e.g., "widen stops")
+    async def run_daily_evolution(self, data: dict = None, recommendations: List[str] = None) -> Optional[EvolutionReport]:
+        """Run daily evolution: always reweight strategies, only optimize params with enough data.
+
+        Phase 1 (always): Backtest each strategy, reweight by performance
+        Phase 2 (gated): Optuna parameter optimization — only if enough real trades exist
+                         Uses walk-forward validation to prevent overfitting.
         """
         from strategy.trend_follower import TrendFollower
         from strategy.mean_reversion import MeanReversion
@@ -109,7 +112,7 @@ class Evolver:
             logger.warning("Not enough data for evolution")
             return None
 
-        # Current strategy performances
+        # === Phase 1: Strategy weight rebalancing (always runs) ===
         strategies = {
             "trend_follower": TrendFollower(),
             "mean_reversion": MeanReversion(),
@@ -118,7 +121,6 @@ class Evolver:
             "scalper": Scalper(),
         }
 
-        # Backtest each strategy to get current performance
         performances: Dict[str, float] = {}
         for name, strategy in strategies.items():
             try:
@@ -128,46 +130,78 @@ class Evolver:
                 logger.warning(f"Backtest failed for {name}: {e}")
                 performances[name] = 0.0
 
-        sharpe_before = sum(performances.values()) / len(performances) if performances else 0
-
-        # Optuna optimization for TrendFollower params
-        def objective(trial: optuna.Trial) -> float:
-            fast_ema = trial.suggest_int("fast_ema", 5, 15)
-            slow_ema = trial.suggest_int("slow_ema", 15, 30)
-            atr_sl = trial.suggest_float("atr_sl_mult", 1.0, 3.0)
-            atr_tp = trial.suggest_float("atr_tp_mult", 2.0, 5.0)
-
-            if fast_ema >= slow_ema:
-                return -999
-
-            strategy = TrendFollower(fast_ema=fast_ema, slow_ema=slow_ema,
-                                      atr_sl_mult=atr_sl, atr_tp_mult=atr_tp)
-            result = backtest_lab.run_backtest(strategy, sample_data, sample_symbol)
-
-            # Fitness: sharpe * sqrt(trades) to reward both quality and frequency
-            if result.total_trades == 0:
-                return -999
-            return result.sharpe_ratio * (result.total_trades ** 0.5)
-
-        study = optuna.create_study(direction="maximize")
-        study.optimize(objective, n_trials=30, show_progress_bar=False)
-
-        best = study.best_params
-        logger.info(f"Optuna best params: {best} (value={study.best_value:.4f})")
-
-        # Backtest with best params to get new sharpe
-        best_strategy = TrendFollower(
-            fast_ema=best.get("fast_ema", 9),
-            slow_ema=best.get("slow_ema", 21),
-            atr_sl_mult=best.get("atr_sl_mult", 1.5),
-            atr_tp_mult=best.get("atr_tp_mult", 3.0),
-        )
-        best_result = backtest_lab.run_backtest(best_strategy, sample_data, sample_symbol)
-        sharpe_after = best_result.sharpe_ratio
-
-        # Reweight strategies based on performance
         new_weights = self.calculate_strategy_weights(performances)
         self.update_strategy_weights(new_weights)
+
+        # === Phase 2: Optuna parameter optimization (gated by trade count) ===
+        # Check if enough real trades exist to justify optimization
+        trade_count = 0
+        try:
+            row = self.db.execute("SELECT COUNT(*) FROM trades WHERE status='CLOSED'").fetchone()
+            trade_count = row[0] if row else 0
+        except Exception:
+            pass
+
+        best = {}
+        sharpe_before = performances.get("trend_follower", 0)
+        sharpe_after = sharpe_before  # Default: no change
+
+        if trade_count < self.MIN_TRADES_FOR_OPTUNA:
+            logger.info(f"Optuna skipped: {trade_count}/{self.MIN_TRADES_FOR_OPTUNA} trades (weights-only mode)")
+        else:
+            # Walk-forward: 70% train / 30% test
+            split_idx = int(len(sample_data) * 0.7)
+            train_data = sample_data.iloc[:split_idx].copy()
+            test_data = sample_data.iloc[split_idx:].copy()
+
+            if len(train_data) < 100 or len(test_data) < 50:
+                logger.info("Not enough data for walk-forward split, skipping Optuna")
+            else:
+                def objective(trial: optuna.Trial) -> float:
+                    fast_ema = trial.suggest_int("fast_ema", 5, 15)
+                    slow_ema = trial.suggest_int("slow_ema", 15, 30)
+                    atr_sl = trial.suggest_float("atr_sl_mult", 1.0, 3.0)
+                    atr_tp = trial.suggest_float("atr_tp_mult", 2.0, 5.0)
+
+                    if fast_ema >= slow_ema:
+                        return -999
+
+                    strategy = TrendFollower(fast_ema=fast_ema, slow_ema=slow_ema,
+                                              atr_sl_mult=atr_sl, atr_tp_mult=atr_tp)
+                    # Train on 70% only
+                    result = backtest_lab.run_backtest(strategy, train_data, sample_symbol)
+
+                    if result.total_trades == 0:
+                        return -999
+                    return result.sharpe_ratio * (result.total_trades ** 0.5)
+
+                study = optuna.create_study(direction="maximize")
+                study.optimize(objective, n_trials=30, show_progress_bar=False)
+
+                best = study.best_params
+                logger.info(f"Optuna best params: {best} (train_value={study.best_value:.4f})")
+
+                # Validate on 30% test set (out-of-sample)
+                best_strategy = TrendFollower(
+                    fast_ema=best.get("fast_ema", 9),
+                    slow_ema=best.get("slow_ema", 21),
+                    atr_sl_mult=best.get("atr_sl_mult", 1.5),
+                    atr_tp_mult=best.get("atr_tp_mult", 3.0),
+                )
+                test_result = backtest_lab.run_backtest(best_strategy, test_data, sample_symbol)
+                sharpe_after = test_result.sharpe_ratio
+
+                # Reject overfitting: test Sharpe must be > 0 and <= 5.0
+                if sharpe_after <= 0:
+                    logger.warning(f"Optuna rejected: test Sharpe {sharpe_after:.2f} <= 0 (overfitting)")
+                    best = {}
+                    sharpe_after = sharpe_before
+                elif sharpe_after > 5.0:
+                    logger.warning(f"Optuna rejected: test Sharpe {sharpe_after:.2f} > 5.0 (likely overfitting)")
+                    best = {}
+                    sharpe_after = sharpe_before
+                else:
+                    logger.info(f"Optuna validated: test Sharpe {sharpe_after:.2f} (accepted)")
 
         # Build report
         report = EvolutionReport(
@@ -179,10 +213,8 @@ class Evolver:
             recommendations_applied=recommendations or [],
         )
 
-        # Log to DB
         self.log_evolution(report)
-
-        logger.info(f"Evolution complete: Sharpe {sharpe_before:.4f} -> {sharpe_after:.4f}")
+        logger.info(f"Evolution complete: Sharpe {sharpe_before:.4f} -> {sharpe_after:.4f} | weights={new_weights}")
 
         return report
 
