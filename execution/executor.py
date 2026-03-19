@@ -383,11 +383,22 @@ class LiveExecutor:
             )
 
             fill_price = float(result.get("avgPrice", 0))
-            fees = position.quantity * fill_price * self.TAKER_FEE if fill_price > 0 else 0
+            filled_qty = float(result.get("executedQty", 0))
+
+            # If fill_price=0 or filled_qty=0, position was likely already closed on exchange
+            if fill_price <= 0 or filled_qty <= 0:
+                logger.info(f"Position {position.symbol} close returned fill=0 (likely already closed by exchange SL)")
+                return ExecutionResult(
+                    success=False, order_ids=[], avg_fill_price=0,
+                    total_filled=0, fees_paid=0, slippage=0,
+                    error="already_closed",
+                )
+
+            fees = filled_qty * fill_price * self.TAKER_FEE
 
             return ExecutionResult(
                 success=True, order_ids=[str(result.get("orderId", ""))],
-                avg_fill_price=fill_price, total_filled=position.quantity,
+                avg_fill_price=fill_price, total_filled=filled_qty,
                 fees_paid=round(fees, 6), slippage=0,
             )
         except Exception as e:
