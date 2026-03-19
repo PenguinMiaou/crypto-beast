@@ -179,15 +179,24 @@ with tab4:
         try:
             closed = pd.read_sql_query(
                 "SELECT strategy, COUNT(*) as trades, "
-                "SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins, "
-                "COALESCE(SUM(pnl), 0) as total_pnl, "
-                "COALESCE(AVG(pnl), 0) as avg_pnl "
-                "FROM trades WHERE status='CLOSED' GROUP BY strategy",
+                "SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as gross_wins, "
+                "SUM(CASE WHEN (pnl - fees) > 0 THEN 1 ELSE 0 END) as net_wins, "
+                "COALESCE(SUM(pnl), 0) as gross_pnl, "
+                "COALESCE(SUM(fees), 0) as total_fees, "
+                "COALESCE(SUM(pnl) - SUM(fees), 0) as net_pnl "
+                "FROM trades WHERE status='CLOSED' AND strategy != 'reconciled' GROUP BY strategy",
                 db
             )
             if len(closed) > 0:
-                closed["Win Rate"] = (closed["wins"] / closed["trades"] * 100).round(1)
-                st.dataframe(closed, use_container_width=True)
+                closed["Gross Win%"] = (closed["gross_wins"] / closed["trades"] * 100).round(1)
+                closed["Net Win%"] = (closed["net_wins"] / closed["trades"] * 100).round(1)
+                closed["gross_pnl"] = closed["gross_pnl"].round(2)
+                closed["total_fees"] = closed["total_fees"].round(2)
+                closed["net_pnl"] = closed["net_pnl"].round(2)
+                closed["Fee Ratio"] = ((closed["total_fees"] / closed["gross_pnl"].abs()) * 100).round(1)
+                display = closed[["strategy", "trades", "Gross Win%", "Net Win%", "gross_pnl", "total_fees", "net_pnl", "Fee Ratio"]]
+                display.columns = ["Strategy", "Trades", "Gross Win%", "Net Win%", "Gross PnL", "Fees", "Net PnL", "Fee %"]
+                st.dataframe(display, use_container_width=True)
             else:
                 st.info("No closed trades yet")
         except Exception as e:

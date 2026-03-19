@@ -7,13 +7,13 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Volumes/ORICO Media/Crypto Trading System/crypto-beast/.venv/bin/python</string>
-        <string>/Volumes/ORICO Media/Crypto Trading System/crypto-beast/crypto_guardian.py</string>
+        <string>/Volumes/ORICO Media/Crypto Trading System/.venv/bin/python</string>
+        <string>/Volumes/ORICO Media/Crypto Trading System/crypto_guardian.py</string>
         <string>live</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Volumes/ORICO Media/Crypto Trading System/crypto-beast</string>
+    <string>/Volumes/ORICO Media/Crypto Trading System</string>
 
     <key>KeepAlive</key>
     <true/>
@@ -22,15 +22,15 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Volumes/ORICO Media/Crypto Trading System/crypto-beast/logs/watchdog_launchd.log</string>
+    <string>/Volumes/ORICO Media/Crypto Trading System/logs/watchdog_launchd.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Volumes/ORICO Media/Crypto Trading System/crypto-beast/logs/watchdog_launchd.log</string>
+    <string>/Volumes/ORICO Media/Crypto Trading System/logs/watchdog_launchd.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/Volumes/ORICO Media/Crypto Trading System/crypto-beast/.venv/bin</string>
+        <string>/usr/local/bin:/usr/bin:/bin:/Volumes/ORICO Media/Crypto Trading System/.venv/bin</string>
     </dict>
 </dict>
 </plist>

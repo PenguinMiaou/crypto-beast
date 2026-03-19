@@ -183,7 +183,7 @@ class PositionManager:
             result = await self._executor.close_position(position, OrderType.MARKET)
             if result.success:
                 # Update DB with actual fill price
-                actual_pnl = trade["pnl"]  # Could recalculate from result.avg_fill_price
+                actual_pnl = trade["pnl"]
                 self.db.execute(
                     "UPDATE trades SET exit_price = ?, exit_time = ?, pnl = ?, fees = fees + ?, status = 'CLOSED' WHERE id = ?",
                     (result.avg_fill_price, datetime.now(timezone.utc).isoformat(),
@@ -193,6 +193,14 @@ class PositionManager:
                     f"LIVE CLOSED {trade['side']} {trade['symbol']} @ ${result.avg_fill_price:,.2f} | "
                     f"PnL={actual_pnl:+.4f} | Reason={trade['reason']}"
                 )
+                return True
+            elif result.error == "already_closed":
+                # Position was already closed by exchange SL — mark CLOSED in DB
+                self.db.execute(
+                    "UPDATE trades SET exit_time = ?, status = 'CLOSED' WHERE id = ?",
+                    (datetime.now(timezone.utc).isoformat(), trade["trade_id"])
+                )
+                logger.info(f"Marked {trade['symbol']} as CLOSED in DB (exchange SL already triggered)")
                 return True
             else:
                 logger.error(f"Live close failed: {result.error}")

@@ -2,16 +2,16 @@
 
 ## Environment
 - Python 3.9.6 — use `Optional[X]` not `X | None`, `Dict`/`List` not `dict`/`list`
-- Venv at `crypto-beast/.venv/`
-- Tests: `cd crypto-beast && source .venv/bin/activate && python -m pytest -q` (409 tests)
+- Venv at `.venv/`
+- Tests: `source .venv/bin/activate && python -m pytest -q` (409 tests)
 - Entry point: `crypto_system.py` (NOT main.py — renamed to avoid conflict with other projects)
 
 ## Running
-- Start: `bash crypto-beast/start.sh live` / `bash crypto-beast/start.sh` (paper) / `bash crypto-beast/start.sh dashboard` / `bash crypto-beast/start.sh stop`
-- Debug modes (bypass watchdog): `bash crypto-beast/start.sh direct-live` / `direct-paper`
+- Start: `bash start.sh live` / `bash start.sh` (paper) / `bash start.sh dashboard` / `bash start.sh stop`
+- Debug modes (bypass watchdog): `bash start.sh direct-live` / `direct-paper`
 - Runs directly from ORICO external drive (I/O errors were from zombie processes, not drive)
-- DB at `crypto-beast/crypto_beast.db`
-- Logs at `crypto-beast/logs/bot.log` (bot), `crypto-beast/logs/watchdog.log` (watchdog)
+- DB at `crypto_beast.db`
+- Logs at `logs/bot.log` (bot), `logs/watchdog.log` (watchdog)
 
 ## Watchdog System (Guardian Daemon)
 - `crypto_guardian.py` monitors + auto-restarts `crypto_system.py`
@@ -140,7 +140,7 @@
 - Design spec: `docs/superpowers/specs/2026-03-15-crypto-beast-design.md`
 - Watchdog spec: `docs/superpowers/specs/2026-03-16-watchdog-daily-review-design.md`
 - Audit plan: `docs/superpowers/plans/2026-03-17-system-audit-fixes.md`
-- All source under `crypto-beast/`
+- All source under ``
 
 ## Code Patterns
 - Strategies: `BaseStrategy.generate(klines, symbol, regime) -> list[TradeSignal]`

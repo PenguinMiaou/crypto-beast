@@ -100,16 +100,19 @@ class LiveExecutor:
         total_cost = 0.0
         total_fees = 0.0
 
-        # Set leverage
+        # Set leverage — -2028 means margin不足以支撑新杠杆，用当前杠杆继续即可
         try:
             await self.rate_limiter.acquire_order_slot()
             await self.exchange.set_leverage(plan.order.leverage, ccxt_symbol)
         except Exception as e:
-            logger.error(f"Failed to set leverage: {e}")
-            return ExecutionResult(
-                success=False, order_ids=[], avg_fill_price=0,
-                total_filled=0, fees_paid=0, slippage=0, error=str(e),
-            )
+            if "-2028" in str(e):
+                logger.warning(f"杠杆设置跳过(保证金不足以调整)，使用当前杠杆继续: {ccxt_symbol}")
+            else:
+                logger.error(f"Failed to set leverage: {e}")
+                return ExecutionResult(
+                    success=False, order_ids=[], avg_fill_price=0,
+                    total_filled=0, fees_paid=0, slippage=0, error=str(e),
+                )
 
         side = "BUY" if signal.direction == Direction.LONG else "SELL"
         position_side = "LONG" if signal.direction == Direction.LONG else "SHORT"
@@ -390,12 +393,14 @@ class LiveExecutor:
         except Exception as e:
             error_str = str(e)
             # -2022 "ReduceOnly Order is rejected" means position already closed
-            # (e.g., exchange SL/TP already triggered). Treat as success.
+            # (e.g., exchange SL/TP already triggered). Return success=False so caller
+            # doesn't try to open a new position in the same cycle.
             if "-2022" in error_str:
                 logger.info(f"Position {position.symbol} already closed on exchange (SL/TP triggered)")
                 return ExecutionResult(
-                    success=True, order_ids=[], avg_fill_price=0,
+                    success=False, order_ids=[], avg_fill_price=0,
                     total_filled=0, fees_paid=0, slippage=0,
+                    error="already_closed",
                 )
             return ExecutionResult(
                 success=False, order_ids=[], avg_fill_price=0,

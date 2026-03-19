@@ -863,6 +863,17 @@ class TradingBot:
                                 f"Position Flipped ({pos.direction.value}→{signal.direction.value})",
                                 f"{pos.symbol} closed {pos.direction.value} PnL={pnl:+.4f} | opening {signal.direction.value}",
                             )
+                        elif close_result.error == "already_closed":
+                            # Position already closed by exchange SL — mark DB, still allow flip
+                            self.db.execute(
+                                "UPDATE trades SET status='CLOSED', exit_time=? WHERE symbol=? AND side=? AND status='OPEN'",
+                                (datetime.now(timezone.utc).isoformat(), pos.symbol, pos.direction.value),
+                            )
+                            logger.info(f"Flip: {pos.symbol} {pos.direction.value} already closed on exchange, marked DB")
+                        else:
+                            # Close failed — don't open new position
+                            logger.warning(f"Flip close failed for {pos.symbol}: {close_result.error}, aborting flip")
+                            continue
                         break
 
                 # Execute
