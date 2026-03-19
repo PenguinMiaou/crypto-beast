@@ -146,7 +146,7 @@ class TradingBot:
                 self._peak_wallet = wallet
             self._circuit_breaker_triggered = False
             circuit_floor = self._peak_wallet * self.config.circuit_breaker_pct
-            logger.info(f"Circuit breaker: peak wallet ${self._peak_wallet:.2f}, floor ${circuit_floor:.2f} (80%)")
+            logger.info(f"Circuit breaker: peak wallet ${self._peak_wallet:.2f}, floor ${circuit_floor:.2f} ({self.config.circuit_breaker_pct:.0%})")
 
             # DataFeed
             # Default symbols: BTC + top altcoins
