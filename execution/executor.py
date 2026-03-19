@@ -94,6 +94,16 @@ class LiveExecutor:
     async def execute(self, plan: ExecutionPlan) -> ExecutionResult:
         """Execute a trade plan on Binance."""
         signal = plan.order.signal
+
+        # Guard: reject zero/tiny quantity orders (ghost orders from stale signals)
+        total_planned_qty = sum(t.get("quantity", 0) for t in plan.entry_tranches)
+        if total_planned_qty <= 0:
+            logger.warning(f"Rejected ghost order: {signal.symbol} qty={total_planned_qty}")
+            return ExecutionResult(
+                success=False, order_ids=[], avg_fill_price=0,
+                total_filled=0, fees_paid=0, slippage=0, error="zero_quantity",
+            )
+
         ccxt_symbol = self._to_ccxt_symbol(signal.symbol)
         order_ids: List[str] = []
         total_filled = 0.0
