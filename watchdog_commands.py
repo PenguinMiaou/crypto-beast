@@ -146,22 +146,66 @@ class WatchdogCommands:
 
     def _cmd_pnl(self, args: List[str]) -> None:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        rows = self._query_db(
-            "SELECT symbol, side, pnl, strategy FROM trades WHERE status = 'CLOSED' AND exit_time >= ?",
-            (today,)
-        )
-        if not rows:
-            self._telegram.send(f"*今日盈亏*\n\n今天无平仓 ({today})")
-            return
-        total_pnl = sum(float(r["pnl"]) for r in rows if r["pnl"])
-        wins = sum(1 for r in rows if r["pnl"] and float(r["pnl"]) > 0)
-        losses = len(rows) - wins
-        lines = [f"*今日盈亏 ({today})*\n"]
-        lines.append(f"总计: ${total_pnl:+.2f}")
-        lines.append(f"交易: {len(rows)} | 胜: {wins} | 负: {losses}")
-        for r in rows:
-            pnl_str = f"${float(r['pnl']):+.2f}" if r["pnl"] else "$0"
-            lines.append(f"  {r['side']} {r['symbol']} | {pnl_str} | {r['strategy']}")
+        lines = [f"今日盈亏 ({today})\n"]
+
+        # Part 1: Realized PnL from Binance income API (ground truth)
+        try:
+            import hmac, hashlib, time as _time, json as _json
+            from urllib.parse import urlencode
+            from collections import defaultdict
+            ts = int(_time.time() * 1000)
+            # Get today's start timestamp
+            from datetime import datetime as dt, timezone as tz
+            today_start = int(dt.strptime(today, "%Y-%m-%d").replace(tzinfo=tz.utc).timestamp() * 1000)
+            params = {"incomeType": "REALIZED_PNL", "startTime": today_start, "limit": 1000, "timestamp": ts}
+            query = urlencode(params)
+            sig = hmac.new(self._api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+            url = f"https://fapi.binance.com/fapi/v1/income?{query}&signature={sig}"
+
+            import urllib.request
+            req = urllib.request.Request(url, headers={"X-MBX-APIKEY": self._api_key})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                income_data = _json.loads(resp.read())
+
+            pnl_by_symbol = defaultdict(float)
+            for item in income_data:
+                pnl_by_symbol[item["symbol"]] += float(item.get("income", 0))
+
+            total_realized = sum(pnl_by_symbol.values())
+            lines.append(f"已实现盈亏: ${total_realized:+.2f} (Binance)")
+            for sym, pnl in sorted(pnl_by_symbol.items(), key=lambda x: x[1], reverse=True):
+                lines.append(f"  {sym}: ${pnl:+.2f}")
+        except Exception as e:
+            # Fallback to DB
+            rows = self._query_db(
+                "SELECT symbol, side, pnl, strategy FROM trades WHERE status = 'CLOSED' AND exit_time >= ?",
+                (today,)
+            )
+            if rows:
+                total_realized = sum(float(r["pnl"]) for r in rows if r["pnl"])
+                lines.append(f"已实现盈亏: ${total_realized:+.2f} (DB)")
+                for r in rows:
+                    pnl_str = f"${float(r['pnl']):+.2f}" if r["pnl"] else "$0"
+                    lines.append(f"  {r['side']} {r['symbol']} | {pnl_str}")
+            else:
+                lines.append("今天无平仓")
+
+        # Part 2: Unrealized PnL from current positions
+        try:
+            ts2 = int(_time.time() * 1000)
+            params2 = {"timestamp": ts2}
+            query2 = urlencode(params2)
+            sig2 = hmac.new(self._api_secret.encode(), query2.encode(), hashlib.sha256).hexdigest()
+            url2 = f"https://fapi.binance.com/fapi/v2/account?{query2}&signature={sig2}"
+            req2 = urllib.request.Request(url2, headers={"X-MBX-APIKEY": self._api_key})
+            with urllib.request.urlopen(req2, timeout=10) as resp2:
+                data = _json.loads(resp2.read())
+            unrealized = float(data.get("totalUnrealizedProfit", 0))
+            lines.append(f"\n未实现盈亏: ${unrealized:+.2f}")
+            lines.append(f"总计: ${total_realized + unrealized:+.2f}")
+        except Exception:
+            pass
+
         self._telegram.send("\n".join(lines))
 
     def _cmd_balance(self, args: List[str]) -> None:
