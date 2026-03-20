@@ -362,12 +362,17 @@ class TradingBot:
                      datetime.now(timezone.utc).isoformat(), 0, "OPEN", 0, 0))
                 logger.info(f"  Added: {side} {symbol} qty={abs(amt)} @ {entry_price} {leverage}x | strategy={strategy} | PnL={unrealized:+.2f}")
 
-        # Cancel all open orders to start clean
+        # Cancel stale LIMIT entry orders (NOT algo/SL orders — those are managed by ensure_sl_orders)
         try:
             for symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
                 ccxt_sym = symbol[:-4] + "/USDT"
                 try:
-                    await self.exchange.cancel_all_orders(ccxt_sym)
+                    # Fetch open orders and cancel only LIMIT/MARKET entry orders, not algo SL
+                    open_orders = await self.exchange.fetch_open_orders(ccxt_sym)
+                    for order in open_orders:
+                        if order.get("type") in ("limit", "market"):
+                            await self.exchange.cancel_order(order["id"], ccxt_sym)
+                            logger.info(f"Cancelled stale {order['type']} order: {symbol} {order['id']}")
                 except Exception:
                     pass
         except Exception as e:
