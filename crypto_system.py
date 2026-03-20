@@ -758,6 +758,18 @@ class TradingBot:
 
         recovery_params = defense_result.params
 
+        # 6.5. Periodic SL check — ensure all positions have exchange-level SL protection
+        # Needed because LIMIT orders may fill after _place_exit_orders was called with qty=0
+        if self._cycle_count % 60 == 0 and not self.paper_mode and positions:
+            executor = m.get("executor")
+            if executor and hasattr(executor, "ensure_sl_orders"):
+                try:
+                    placed = await executor.ensure_sl_orders(self.db)
+                    if placed:
+                        logger.info(f"Periodic SL check: placed {placed} missing SL orders")
+                except Exception as e:
+                    logger.warning(f"Periodic SL check failed: {e}")
+
         # 7. Check existing positions FIRST (before opening new ones)
         to_close = m["position_manager"].check_positions()
         closed_this_cycle = False
