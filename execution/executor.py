@@ -561,14 +561,15 @@ class LiveExecutor:
         url = f"https://fapi.binance.com/fapi/v1/openAlgoOrders?{query}&signature={signature}"
 
         existing_sl = set()  # (symbol, positionSide) that already have SL
+        all_algo_orders = []
         try:
             await self.rate_limiter.acquire_order_slot()
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers={"X-MBX-APIKEY": api_key}) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        orders = data if isinstance(data, list) else data.get("orders", [])
-                        for o in orders:
+                        all_algo_orders = data if isinstance(data, list) else data.get("orders", [])
+                        for o in all_algo_orders:
                             existing_sl.add((o.get("symbol"), o.get("positionSide")))
         except Exception as e:
             logger.warning(f"Failed to query existing algo orders: {e}")
@@ -623,5 +624,31 @@ class LiveExecutor:
             logger.info(f"ensure_sl_orders: placed {placed} missing SL orders")
         else:
             logger.info("ensure_sl_orders: all positions have SL protection")
+
+        # Step 3: Clean up orphaned algo orders (no matching open position)
+        open_keys = set()
+        for row in rows:
+            binance_sym = self._to_binance_symbol(row[0])
+            open_keys.add((binance_sym, row[1]))  # (symbol, side)
+
+        for o in all_algo_orders:
+            key = (o.get("symbol"), o.get("positionSide"))
+            if key not in open_keys:
+                algo_id = o.get("algoId")
+                try:
+                    cancel_params = {
+                        "algoId": algo_id,
+                        "timestamp": int(_time.time() * 1000),
+                    }
+                    cquery = urlencode(cancel_params)
+                    csig = hmac.new(api_secret.encode(), cquery.encode(), hashlib.sha256).hexdigest()
+                    curl = f"https://fapi.binance.com/fapi/v1/algoOrder?{cquery}&signature={csig}"
+                    await self.rate_limiter.acquire_order_slot()
+                    async with aiohttp.ClientSession() as session:
+                        async with session.delete(curl, headers={"X-MBX-APIKEY": api_key}) as cresp:
+                            if cresp.status == 200:
+                                logger.info(f"Cleaned orphan algo: {key[0]} {key[1]} algoId={algo_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean orphan algo {algo_id}: {e}")
 
         return placed
