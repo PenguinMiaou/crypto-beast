@@ -817,26 +817,32 @@ class TradingBot:
                     m["multi_timeframe"].update(symbol, klines_by_tf)
 
         # 10. Generate and execute signals (skip if unhealthy/funding — position monitoring always runs)
-        # Skip signal generation if positions full OR insufficient margin for min notional
-        if len(positions) >= self.config.max_concurrent_positions:
-            _skip_new_trades = True
-        elif portfolio.available_balance < 10:  # Need margin for at least $20 notional at 3x
+        # When positions full: still generate signals for FLIP (reversal), but no new symbols
+        _positions_full = len(positions) >= self.config.max_concurrent_positions
+        if not _positions_full and portfolio.available_balance < 10:
             _skip_new_trades = True
 
         opened_this_cycle = 0  # Max 1 new position per cycle
         # Build set of (symbol, side) already held — prevent duplicate/opposing positions
         held_positions = set()  # type: ignore
+        held_symbols = set()  # type: ignore
         for p in positions:
             binance_sym = p.symbol if p.symbol.endswith("USDT") and "/" not in p.symbol else p.symbol.replace("/USDT:USDT", "USDT").replace("/USDT", "USDT")
             held_positions.add((binance_sym, p.direction.value))
+            held_symbols.add(binance_sym)
 
         for symbol in data_feed.symbols:
             if _skip_new_trades or opened_this_cycle >= 1:
                 break
 
-            # Skip if we already hold ANY position for this symbol (no stacking, no hedging)
-            if any(sym == symbol for sym, _ in held_positions):
-                continue
+            if _positions_full:
+                # Full: only process symbols we already hold (for potential flip)
+                if symbol not in held_symbols:
+                    continue
+            else:
+                # Not full: skip symbols we already hold (no stacking)
+                if symbol in held_symbols:
+                    continue
 
             klines_5m = data_feed.get_klines(symbol, "5m")
             if len(klines_5m) < 50:
@@ -876,6 +882,13 @@ class TradingBot:
                 break
 
             for signal in signals:
+                # When positions full, only allow flip (opposite direction to current holding)
+                if _positions_full:
+                    from core.models import Direction
+                    current_side = next((side for sym, side in held_positions if sym == symbol), None)
+                    if current_side and current_side == signal.direction.value:
+                        continue  # Same direction as held — skip, no stacking
+
                 # Apply intelligence module biases
                 from core.models import SignalType, Direction
                 symbol_biases = intel_biases.get(signal.symbol, [])

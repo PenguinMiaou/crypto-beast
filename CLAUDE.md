@@ -63,6 +63,7 @@
 - `fetch_market_data()` uses `asyncio.gather` for parallel kline fetches (3 symbols × 4 TFs = 12 calls); serial was ~5s → parallel ~1.3s
 - Duplicate position guard: skip signal generation for symbol if already holding ANY position (no stacking, no hedging same symbol)
 - Periodic SL check: `ensure_sl_orders()` runs every 60 cycles (~5min) to catch LIMIT fills missing SL
+- Flip when full: positions full still generates signals for held symbols; opposite-direction signal triggers flip (close+reopen)
 - LIMIT orders may return `executedQty=0` (pending) → `_place_exit_orders` skips SL → periodic check fixes this
 - In hedge mode, SELL with positionSide=LONG on empty position = -2022 (not -2019)
 
@@ -142,7 +143,7 @@
 - MINOR: new features, significant improvements (e.g., DefenseManager, signal pipeline)
 - PATCH: bug fixes, small tweaks (e.g., fix -2022 handling, fix timeout)
 - Tag + GitHub release for every MINOR/MAJOR bump; PATCH optional
-- Current: v1.5.6 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
+- Current: v1.5.7 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
 
 ## Architecture
 - 7-layer async trading system for Binance USDT-M Futures
