@@ -489,23 +489,32 @@ class TradingBot:
             logger.debug(f"PnL reconciliation skipped: {e}")
 
     async def fetch_market_data(self) -> bool:
-        """Fetch latest klines from Binance for all symbols/timeframes."""
+        """Fetch latest klines from Binance for all symbols/timeframes (parallel)."""
+        import pandas as pd
         m = self.modules
         data_feed = m["data_feed"]
         success = True
 
-        for symbol in data_feed.symbols:
+        async def _fetch_one(symbol: str, interval: str):
             ccxt_symbol = symbol[:-4] + "/USDT" if symbol.endswith("USDT") and "/" not in symbol else symbol
+            ohlcv = await self.exchange.fetch_ohlcv(ccxt_symbol, interval, limit=200)
+            df = pd.DataFrame(ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"])
+            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+            return symbol, interval, df
+
+        tasks = []
+        for symbol in data_feed.symbols:
             for interval in data_feed.intervals:
-                try:
-                    import pandas as pd
-                    ohlcv = await self.exchange.fetch_ohlcv(ccxt_symbol, interval, limit=200)
-                    df = pd.DataFrame(ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"])
-                    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-                    data_feed.update_cache(symbol, interval, df)
-                except Exception as e:
-                    logger.warning(f"Failed to fetch {symbol} {interval}: {e}")
-                    success = False
+                tasks.append(_fetch_one(symbol, interval))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(f"Failed to fetch market data: {result}")
+                success = False
+            else:
+                symbol, interval, df = result
+                data_feed.update_cache(symbol, interval, df)
 
         return success
 
