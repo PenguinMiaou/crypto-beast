@@ -84,13 +84,13 @@ class RiskManager:
         min_notional = MIN_NOTIONAL.get(signal.symbol, DEFAULT_MIN_NOTIONAL)
         min_margin_needed = min_notional / leverage
 
-        # Allocate capital: ensure at least min_margin_needed, cap at 50% of equity
+        # Allocate capital: ensure at least min_margin_needed, cap at 40% of equity
         remaining_slots = self.config.max_concurrent_positions - len(portfolio.positions)
         if remaining_slots <= 0:
             return None
         max_per_position = available / remaining_slots
         capital_for_this = max(min_margin_needed * 1.05, max_per_position)  # 5% buffer above minimum
-        capital_for_this = min(capital_for_this, available * 0.95, portfolio.equity * 0.5)
+        capital_for_this = min(capital_for_this, available * 0.95, portfolio.equity * 0.4)
 
         if capital_for_this <= 0:
             logger.debug("Signal rejected: no available capital")
@@ -109,8 +109,17 @@ class RiskManager:
                 )
                 return None
 
+        # Confidence-scaled risk: high conviction → bigger position
+        base_risk = self.config.max_risk_per_trade  # 0.02 base
+        if signal.confidence >= 0.7:
+            risk_multiplier = 3.0   # 6% risk — strong signal, go big
+        elif signal.confidence >= 0.5:
+            risk_multiplier = 2.0   # 4% risk — normal
+        else:
+            risk_multiplier = 1.0   # 2% risk — probe only
+
         # Calculate position size based on risk
-        risk_per_trade = capital_for_this * self.config.max_risk_per_trade
+        risk_per_trade = capital_for_this * base_risk * risk_multiplier
         risk_distance = abs(entry - stop)
 
         if risk_distance == 0:
