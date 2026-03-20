@@ -812,9 +812,19 @@ class TradingBot:
             _skip_new_trades = True
 
         opened_this_cycle = 0  # Max 1 new position per cycle
+        # Build set of (symbol, side) already held — prevent duplicate/opposing positions
+        held_positions = set()  # type: ignore
+        for p in positions:
+            binance_sym = p.symbol if p.symbol.endswith("USDT") and "/" not in p.symbol else p.symbol.replace("/USDT:USDT", "USDT").replace("/USDT", "USDT")
+            held_positions.add((binance_sym, p.direction.value))
+
         for symbol in data_feed.symbols:
             if _skip_new_trades or opened_this_cycle >= 1:
                 break
+
+            # Skip if we already hold ANY position for this symbol (no stacking, no hedging)
+            if any(sym == symbol for sym, _ in held_positions):
+                continue
 
             klines_5m = data_feed.get_klines(symbol, "5m")
             if len(klines_5m) < 50:
