@@ -28,6 +28,10 @@ class PositionManager:
         self._timeout_pnl_min = getattr(config, 'timeout_pnl_min', -0.01)
         self._timeout_pnl_max = getattr(config, 'timeout_pnl_max', 0.02)
 
+        # Breakeven SL: move stop to entry + fees when leveraged PnL exceeds threshold
+        self._breakeven_threshold = getattr(config, 'breakeven_sl_threshold', 0.05)
+        self._pending_sl_updates: List[dict] = []
+
         # Track peak prices and profits per trade for trailing/protection
         # Peaks are persisted to DB (peak_profit column) so restarts don't lose them
         self._peak_prices: Dict[int, float] = {}   # trade_id -> peak favorable price
@@ -88,6 +92,22 @@ class PositionManager:
 
             reason = None
             exit_price = current_price
+
+            # 0. Breakeven SL: move stop to entry + fees when profit > threshold
+            if profit_pct >= self._breakeven_threshold and stop_loss:
+                fee_adj = entry_price * 0.0008 / leverage  # 2x taker fee / leverage
+                if side == "LONG":
+                    breakeven_sl = entry_price + fee_adj
+                    if stop_loss < breakeven_sl:
+                        new_sl = round(breakeven_sl, 2)
+                        self._schedule_sl_update(trade_id, symbol, side, quantity, new_sl)
+                        stop_loss = new_sl  # Use updated SL for rest of checks
+                else:  # SHORT
+                    breakeven_sl = entry_price - fee_adj
+                    if stop_loss > breakeven_sl:
+                        new_sl = round(breakeven_sl, 2)
+                        self._schedule_sl_update(trade_id, symbol, side, quantity, new_sl)
+                        stop_loss = new_sl
 
             # 1. Static SL/TP check
             if stop_loss and side == "LONG" and current_price <= stop_loss:
@@ -227,3 +247,34 @@ class PositionManager:
         except Exception as e:
             logger.error(f"Live close exception: {e}")
             return False
+
+    def _schedule_sl_update(self, trade_id: int, symbol: str, side: str,
+                             quantity: float, new_sl: float) -> None:
+        """Sync DB update + queue async exchange update."""
+        self.db.execute("UPDATE trades SET stop_loss = ? WHERE id = ?", (new_sl, trade_id))
+        self._pending_sl_updates.append({
+            "trade_id": trade_id, "symbol": symbol,
+            "side": side, "quantity": quantity, "new_sl": new_sl,
+        })
+        logger.info(f"SL update scheduled: {symbol} {side} SL→{new_sl}")
+
+    async def process_pending_sl_updates(self) -> None:
+        """Execute queued exchange SL updates. Called by main loop."""
+        while self._pending_sl_updates:
+            update = self._pending_sl_updates.pop(0)
+            if self._executor:
+                binance_sym = self._executor._to_binance_symbol(update["symbol"])
+                pos_side = update["side"]
+                try:
+                    await self._executor.cancel_algo_orders(binance_sym, pos_side)
+                    close_side = "SELL" if pos_side == "LONG" else "BUY"
+                    rounded_qty = self._executor._round_qty(update["symbol"], update["quantity"])
+                    await self._executor._place_algo_order(
+                        binance_sym, close_side, pos_side, "STOP_MARKET",
+                        rounded_qty, update["new_sl"]
+                    )
+                    logger.info(
+                        f"SL moved to breakeven: {update['symbol']} {pos_side} SL={update['new_sl']}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to update exchange SL: {e}")

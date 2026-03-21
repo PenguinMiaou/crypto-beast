@@ -56,11 +56,12 @@ class Config:
     pattern_min_confidence: float = 0.5
 
     # MultiTimeframe
-    mtf_min_confluence: int = 6
+    mtf_min_confluence: int = 4
 
     # Profit protection
     profit_protect_activation_pct: float = 0.08   # Activate after 8% leveraged PnL
     profit_protect_drawback_pct: float = 0.35      # Close if 35% of peak profit given back
+    breakeven_sl_threshold: float = 0.05           # Move SL to breakeven when leveraged PnL > 5%
 
     # Position timeout
     position_timeout_hours: int = 48

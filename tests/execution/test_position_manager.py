@@ -221,6 +221,90 @@ class TestProfitProtection:
         assert len(result) == 0
 
 
+class TestBreakevenSL:
+
+    def test_breakeven_sl_scheduled(self, db):
+        """Fix #16: SL should move to breakeven when profit > 5%."""
+        from datetime import datetime, timezone
+        from config import Config
+        from execution.position_manager import PositionManager
+        entry = 65000.0
+        db.execute(
+            "INSERT INTO trades (symbol, side, entry_price, quantity, leverage, "
+            "strategy, entry_time, fees, status, stop_loss, take_profit, peak_profit) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("BTCUSDT", "LONG", entry, 0.001, 10, "test",
+             datetime.now(timezone.utc).isoformat(), 0.01, "OPEN", 63000.0, 70000.0, 0.08)
+        )
+        config = Config()
+        # Price gives 6% leveraged PnL: (65390 - 65000) / 65000 * 10 = 0.06
+        pm = PositionManager(db, lambda s: 65390.0, config)
+        pm.check_positions()
+        row = db.execute("SELECT stop_loss FROM trades WHERE status='OPEN'").fetchone()
+        assert row[0] > 64000.0, f"SL should have moved up from 63000, got {row[0]}"
+
+    def test_breakeven_sl_not_triggered_below_threshold(self, db):
+        """SL should NOT move when profit is below the 5% threshold."""
+        from datetime import datetime, timezone
+        from config import Config
+        from execution.position_manager import PositionManager
+        entry = 65000.0
+        db.execute(
+            "INSERT INTO trades (symbol, side, entry_price, quantity, leverage, "
+            "strategy, entry_time, fees, status, stop_loss, take_profit, peak_profit) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("BTCUSDT", "LONG", entry, 0.001, 10, "test",
+             datetime.now(timezone.utc).isoformat(), 0.01, "OPEN", 63000.0, 70000.0, 0.0)
+        )
+        config = Config()
+        # Price gives 3% leveraged PnL: (65195 - 65000) / 65000 * 10 = 0.03 (below 5%)
+        pm = PositionManager(db, lambda s: 65195.0, config)
+        pm.check_positions()
+        row = db.execute("SELECT stop_loss FROM trades WHERE status='OPEN'").fetchone()
+        assert row[0] == 63000.0, f"SL should stay at 63000, got {row[0]}"
+
+    def test_breakeven_sl_short(self, db):
+        """Fix #16: SHORT SL should move down to breakeven when profit > 5%."""
+        from datetime import datetime, timezone
+        from config import Config
+        from execution.position_manager import PositionManager
+        entry = 65000.0
+        db.execute(
+            "INSERT INTO trades (symbol, side, entry_price, quantity, leverage, "
+            "strategy, entry_time, fees, status, stop_loss, take_profit, peak_profit) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("BTCUSDT", "SHORT", entry, 0.001, 10, "test",
+             datetime.now(timezone.utc).isoformat(), 0.01, "OPEN", 67000.0, 60000.0, 0.08)
+        )
+        config = Config()
+        # Price gives 6% leveraged PnL for SHORT: (65000 - 64610) / 65000 * 10 = 0.06
+        pm = PositionManager(db, lambda s: 64610.0, config)
+        pm.check_positions()
+        row = db.execute("SELECT stop_loss FROM trades WHERE status='OPEN'").fetchone()
+        assert row[0] < 67000.0, f"SL should have moved down from 67000, got {row[0]}"
+
+    def test_breakeven_sl_already_above_breakeven_not_moved(self, db):
+        """SL already above breakeven should not be moved (no regression)."""
+        from datetime import datetime, timezone
+        from config import Config
+        from execution.position_manager import PositionManager
+        entry = 65000.0
+        # SL already at 65100 (above breakeven of ~65005.2)
+        db.execute(
+            "INSERT INTO trades (symbol, side, entry_price, quantity, leverage, "
+            "strategy, entry_time, fees, status, stop_loss, take_profit, peak_profit) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("BTCUSDT", "LONG", entry, 0.001, 10, "test",
+             datetime.now(timezone.utc).isoformat(), 0.01, "OPEN", 65100.0, 70000.0, 0.08)
+        )
+        config = Config()
+        # 6% leveraged PnL — but SL already above breakeven, should not regress
+        pm = PositionManager(db, lambda s: 65390.0, config)
+        pm.check_positions()
+        row = db.execute("SELECT stop_loss FROM trades WHERE status='OPEN'").fetchone()
+        assert row[0] == 65100.0, f"SL should remain at 65100, got {row[0]}"
+
+
 class TestTimeout:
 
     def test_timeout_closes_stale_position(self, db):
