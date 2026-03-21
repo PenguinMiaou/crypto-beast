@@ -27,6 +27,7 @@ class Breakout(BaseStrategy):
         df["bb_lower"] = bb.bollinger_lband()
         df["bb_width"] = df["bb_upper"] - df["bb_lower"]
         df["vol_sma"] = df["volume"].rolling(window=20).mean()
+        df["atr"] = ta.volatility.average_true_range(df["high"], df["low"], df["close"], window=14)
 
         signals = []
         last = df.iloc[-1]
@@ -54,6 +55,7 @@ class Breakout(BaseStrategy):
         price = last["close"]
         upper = last["bb_upper"]
         lower = last["bb_lower"]
+        atr = last["atr"] if not pd.isna(last["atr"]) else (upper - lower) / 4
         vol_avg = last["vol_sma"]
         volume_ratio = last["volume"] / vol_avg if vol_avg > 0 else 0
 
@@ -72,7 +74,7 @@ class Breakout(BaseStrategy):
                 direction=Direction.LONG,
                 confidence=round(min(0.95, confidence), 3),
                 entry_price=price,
-                stop_loss=round(lower, 2),
+                stop_loss=round(price - 2.0 * atr, 2),
                 take_profit=round(price + (price - lower), 2),
                 strategy=self.name,
                 regime=regime,
@@ -90,7 +92,7 @@ class Breakout(BaseStrategy):
                 direction=Direction.SHORT,
                 confidence=round(min(0.95, confidence), 3),
                 entry_price=price,
-                stop_loss=round(upper, 2),
+                stop_loss=round(price + 2.0 * atr, 2),
                 take_profit=round(price - (upper - price), 2),
                 strategy=self.name,
                 regime=regime,

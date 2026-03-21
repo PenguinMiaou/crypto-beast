@@ -1,15 +1,19 @@
 """Tests for PositionManager SL/TP monitoring."""
 import pytest
+from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 
 from core.database import Database
 from execution.position_manager import PositionManager
 
 
-def _make_config(activation_pct=0.02, drawback_pct=0.50):
+def _make_config(activation_pct=0.02, drawback_pct=0.50, timeout_hours=99999):
     return SimpleNamespace(
         profit_protect_activation_pct=activation_pct,
         profit_protect_drawback_pct=drawback_pct,
+        position_timeout_hours=timeout_hours,
+        timeout_pnl_min=-0.01,
+        timeout_pnl_max=0.02,
     )
 
 
@@ -215,3 +219,22 @@ class TestProfitProtection:
         prices[0] = 65000.0
         result = pm.check_positions()
         assert len(result) == 0
+
+
+class TestTimeout:
+
+    def test_timeout_closes_stale_position(self, db):
+        """Fix #7: positions held > 48h with small PnL should be closed."""
+        entry_time = (datetime.now(timezone.utc) - timedelta(hours=50)).isoformat()
+        db.execute(
+            "INSERT INTO trades (symbol, side, entry_price, quantity, leverage, "
+            "strategy, entry_time, fees, status, stop_loss, take_profit, peak_profit) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("BTCUSDT", "LONG", 65000.0, 0.001, 5, "test", entry_time,
+             0.01, "OPEN", 63000.0, 67000.0, 0.0)
+        )
+        from config import Config
+        pm = PositionManager(db, lambda s: 65100.0, Config())
+        to_close = pm.check_positions()
+        reasons = [t["reason"] for t in to_close]
+        assert "TIMEOUT" in reasons, f"Expected TIMEOUT, got {reasons}"

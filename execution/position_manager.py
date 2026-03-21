@@ -23,6 +23,11 @@ class PositionManager:
         self._profit_protect_activation_pct = config.profit_protect_activation_pct
         self._profit_protect_drawback_pct = config.profit_protect_drawback_pct
 
+        # Position timeout
+        self._timeout_hours = getattr(config, 'position_timeout_hours', 48)
+        self._timeout_pnl_min = getattr(config, 'timeout_pnl_min', -0.01)
+        self._timeout_pnl_max = getattr(config, 'timeout_pnl_max', 0.02)
+
         # Track peak prices and profits per trade for trailing/protection
         # Peaks are persisted to DB (peak_profit column) so restarts don't lose them
         self._peak_prices: Dict[int, float] = {}   # trade_id -> peak favorable price
@@ -48,13 +53,13 @@ class PositionManager:
         Returns list of positions that should be closed with reason.
         """
         rows = self.db.execute(
-            "SELECT id, symbol, side, entry_price, quantity, leverage, stop_loss, take_profit, strategy FROM trades WHERE status = 'OPEN'"
+            "SELECT id, symbol, side, entry_price, quantity, leverage, stop_loss, take_profit, strategy, entry_time FROM trades WHERE status = 'OPEN'"
         ).fetchall()
 
         to_close: List[dict] = []
 
         for row in rows:
-            trade_id, symbol, side, entry_price, quantity, leverage, stop_loss, take_profit, strategy = row
+            trade_id, symbol, side, entry_price, quantity, leverage, stop_loss, take_profit, strategy, entry_time = row
 
             current_price = self._get_price(symbol)
             if current_price <= 0:
@@ -105,9 +110,9 @@ class PositionManager:
                 if peak_profit >= 0.40:
                     max_drawback = 0.20  # 40%+ profit: only allow 20% giveback
                 elif peak_profit >= 0.20:
-                    max_drawback = 0.30  # 20-40% profit: allow 30% giveback
+                    max_drawback = 0.25  # 20-40% profit: allow 25% giveback
                 elif peak_profit >= 0.10:
-                    max_drawback = 0.40  # 10-20% profit: allow 40% giveback
+                    max_drawback = 0.30  # 10-20% profit: allow 30% giveback
                 else:
                     max_drawback = self._profit_protect_drawback_pct  # <10%: default (50%)
 
@@ -115,6 +120,20 @@ class PositionManager:
                 if drawback >= max_drawback:
                     reason = "PROFIT_PROTECT"
                     exit_price = current_price
+
+            # 3. Timeout: close stale positions with small PnL
+            if reason is None:
+                try:
+                    if entry_time:
+                        entry_dt = datetime.fromisoformat(entry_time) if isinstance(entry_time, str) else entry_time
+                        if entry_dt.tzinfo is None:
+                            entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+                        hours_held = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 3600
+                        if hours_held >= self._timeout_hours and self._timeout_pnl_min <= profit_pct <= self._timeout_pnl_max:
+                            reason = "TIMEOUT"
+                            exit_price = current_price
+                except (ValueError, TypeError):
+                    pass
 
             if reason:
                 # Calculate PnL

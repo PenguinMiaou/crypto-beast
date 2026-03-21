@@ -908,7 +908,7 @@ class TradingBot:
                     signal_type = SignalType.BULLISH if signal.direction == Direction.LONG else SignalType.BEARISH
                     agreement_count = sum(1 for b in symbol_biases if b.direction == signal_type)
                     conflict_count = sum(1 for b in symbol_biases if b.direction != signal_type and b.direction != SignalType.NEUTRAL)
-                    intel_adj = agreement_count * 0.03 - conflict_count * 0.05
+                    intel_adj = agreement_count * 0.01 - conflict_count * 0.02
                     signal.confidence = max(0.05, min(1.0, signal.confidence + intel_adj))
                     if intel_adj != 0:
                         logger.debug(f"Intel adjustment {signal.symbol}: {intel_adj:+.2f} ({agreement_count} agree, {conflict_count} conflict)")
