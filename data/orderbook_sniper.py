@@ -1,6 +1,6 @@
 """OrderBook Sniper - Analyzes order book imbalance and wall detection."""
 
-from typing import List
+from typing import Dict, List, Optional
 
 from core.models import DirectionalBias, SignalType
 
@@ -15,6 +15,31 @@ class OrderBookSniper:
         self.imbalance_bullish = imbalance_bullish
         self.imbalance_bearish = imbalance_bearish
         self.wall_multiplier = wall_multiplier
+        self._latest_orderbooks: Dict[str, dict] = {}
+
+    def process_orderbook(self, orderbook: dict) -> None:
+        """Store latest orderbook snapshot for a symbol (used by process_ws_depth)."""
+        symbol = orderbook.get("symbol", "")
+        if symbol:
+            self._latest_orderbooks[symbol] = orderbook
+
+    def process_ws_depth(self, data: dict):
+        """Process depth20 WebSocket message.
+
+        Format: {"s": "BTCUSDT", "b": [[price, qty], ...], "a": [[price, qty], ...]}
+        """
+        try:
+            symbol = data.get("s", "")
+            bids = [[float(p), float(q)] for p, q in data.get("b", [])]
+            asks = [[float(p), float(q)] for p, q in data.get("a", [])]
+            if bids and asks:
+                self.process_orderbook({
+                    "symbol": symbol,
+                    "bids": bids,
+                    "asks": asks,
+                })
+        except (ValueError, TypeError):
+            pass
 
     def get_imbalance(self, orderbook: dict) -> float:
         """Calculate bid/ask volume ratio at top 20 levels."""

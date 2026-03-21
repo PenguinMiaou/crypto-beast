@@ -68,6 +68,55 @@ class LiquidationHunter:
             if self._volume_history else 0
         )
 
+    def process_event(self, event: dict) -> None:
+        """Process a normalized liquidation event (used by process_ws_liquidation).
+
+        Expects keys: symbol, liquidation_side (SELL/BUY), quantity, price, notional, timestamp.
+        Converts liquidation_side to side: SELL order = LONG liquidated; BUY order = SHORT liquidated.
+        """
+        side_map = {"SELL": "LONG", "BUY": "SHORT"}
+        raw_side = event.get("liquidation_side", "")
+        side = side_map.get(raw_side, raw_side)
+        from datetime import datetime, timezone
+        ts = event.get("timestamp")
+        if isinstance(ts, (int, float)) and ts > 0:
+            try:
+                ts = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+            except (OSError, OverflowError, ValueError):
+                ts = datetime.now(timezone.utc)
+        elif not isinstance(ts, datetime):
+            ts = datetime.now(timezone.utc)
+        self.process_liquidation({
+            "side": side,
+            "quantity": event.get("quantity", 0),
+            "price": event.get("price", 0),
+            "timestamp": ts,
+        })
+
+    def process_ws_liquidation(self, data: dict):
+        """Process forceOrder WebSocket message.
+
+        Format: {"o": {"s": "BTCUSDT", "S": "SELL", "q": "0.5", "p": "86500.0", "T": ...}}
+        S=SELL means a LONG position was liquidated
+        """
+        try:
+            order = data.get("o", {})
+            symbol = order.get("s", "")
+            side = order.get("S", "")  # SELL = long liquidated, BUY = short liquidated
+            qty = float(order.get("q", 0))
+            price = float(order.get("p", 0))
+
+            self.process_event({
+                "symbol": symbol,
+                "liquidation_side": side,
+                "quantity": qty,
+                "price": price,
+                "notional": price * qty,
+                "timestamp": order.get("T", 0),
+            })
+        except (ValueError, TypeError):
+            pass
+
     def get_signal(self, symbol: str = "BTCUSDT") -> DirectionalBias:
         """Generate signal from liquidation data."""
         if not self._events:

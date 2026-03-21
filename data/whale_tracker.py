@@ -38,6 +38,31 @@ class WhaleTracker:
                     pass
             self._large_trades = kept
 
+    def process_ws_trade(self, data: dict):
+        """Process aggTrade WebSocket message.
+
+        Format: {"s": "BTCUSDT", "p": "87000.0", "q": "1.5", "m": true, "T": 1234567890}
+        m=true means seller was maker (buyer was aggressor = buy pressure)
+        """
+        try:
+            symbol = data.get("s", "")
+            price = float(data.get("p", 0))
+            qty = float(data.get("q", 0))
+            notional = price * qty
+            is_buyer_aggressor = not data.get("m", True)  # m=true means seller is maker
+
+            if notional >= self.LARGE_TRADE_THRESHOLD:
+                direction = "BUY" if is_buyer_aggressor else "SELL"
+                self.process_trade({
+                    "symbol": symbol,
+                    "price": price,
+                    "quantity": qty,
+                    "side": direction,
+                    "timestamp": data.get("T", 0),
+                })
+        except (ValueError, TypeError):
+            pass
+
     def get_signal(self, symbol: str = "BTCUSDT") -> DirectionalBias:
         """Analyze recent whale activity."""
         if not self._large_trades:
