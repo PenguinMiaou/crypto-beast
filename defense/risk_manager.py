@@ -53,6 +53,10 @@ class RiskManager:
                 logger.debug(f"Signal rejected: already have {signal.direction.value} in {signal.symbol}")
                 return None
 
+        # Directional exposure check: reject if same-dir notional exceeds max_directional_leverage * equity
+        if not self._check_directional_exposure(signal, portfolio):
+            return None
+
         # Correlation check: reduce confidence for correlated positions
         correlated_pairs = {
             "BTCUSDT": ["ETHUSDT", "SOLUSDT"],
@@ -62,7 +66,7 @@ class RiskManager:
         for pos in portfolio.positions:
             if pos.symbol in correlated_pairs.get(signal.symbol, []):
                 if pos.direction == signal.direction:
-                    signal.confidence *= 0.8
+                    signal.confidence *= self.config.correlation_penalty
                     logger.debug(f"Correlation penalty: {signal.symbol} same direction as {pos.symbol}")
 
         # Determine leverage based on confidence
@@ -109,14 +113,15 @@ class RiskManager:
                 )
                 return None
 
-        # Confidence-scaled risk: high conviction → bigger position
-        base_risk = self.config.max_risk_per_trade  # 0.02 base
-        if signal.confidence >= 0.7:
-            risk_multiplier = 3.0   # 6% risk — strong signal, go big
-        elif signal.confidence >= 0.5:
-            risk_multiplier = 2.0   # 4% risk — normal
+        # Confidence-scaled risk: continuous scaling from 1.0x at min confidence to 3.5x at 1.0
+        base_risk = self.config.max_risk_per_trade  # 0.03 base
+        MIN_CONF = 0.3
+        MAX_MULTIPLIER = 3.5
+        if signal.confidence <= MIN_CONF:
+            risk_multiplier = 1.0
         else:
-            risk_multiplier = 1.0   # 2% risk — probe only
+            risk_multiplier = 1.0 + (signal.confidence - MIN_CONF) / (1.0 - MIN_CONF) * (MAX_MULTIPLIER - 1.0)
+        risk_multiplier = max(1.0, min(MAX_MULTIPLIER, risk_multiplier))
 
         # Calculate position size based on risk
         risk_per_trade = capital_for_this * base_risk * risk_multiplier
@@ -161,6 +166,38 @@ class RiskManager:
             risk_amount=round(risk_amount, 4),
             max_slippage=0.001,
         )
+
+    def _check_directional_exposure(self, signal: TradeSignal, portfolio: Portfolio) -> bool:
+        """Return False (reject) if adding this signal would exceed directional exposure limits."""
+        same_dir_positions = [p for p in portfolio.positions if p.direction == signal.direction]
+
+        # Check total same-direction notional vs equity
+        same_dir_notional = sum(p.quantity * p.entry_price for p in same_dir_positions)
+        # Estimate proposed notional: use max_risk_per_trade * MAX_MULTIPLIER as rough proxy
+        # Actual quantity not yet known, so use min_notional as conservative floor
+        min_notional = MIN_NOTIONAL.get(signal.symbol, DEFAULT_MIN_NOTIONAL)
+        proposed_notional = max(min_notional, portfolio.equity * self.config.max_risk_per_trade)
+        if same_dir_notional + proposed_notional > portfolio.equity * self.config.max_directional_leverage:
+            logger.debug(
+                f"Signal rejected: directional exposure ${same_dir_notional + proposed_notional:.2f}"
+                f" > {self.config.max_directional_leverage}x equity ${portfolio.equity:.2f}"
+            )
+            return False
+
+        # Check correlated same-direction count
+        correlated_group = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+        if signal.symbol in correlated_group:
+            same_dir_corr_count = sum(
+                1 for p in same_dir_positions if p.symbol in correlated_group
+            )
+            if same_dir_corr_count >= self.config.max_correlated_same_dir:
+                logger.debug(
+                    f"Signal rejected: {same_dir_corr_count} correlated same-dir positions"
+                    f" >= limit {self.config.max_correlated_same_dir}"
+                )
+                return False
+
+        return True
 
     def validate_fast(self, signal: TradeSignal, portfolio: Portfolio) -> Optional[ValidatedOrder]:
         """Fast validation for altcoin lag strategy."""

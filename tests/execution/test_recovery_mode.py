@@ -43,7 +43,7 @@ class TestRecoveryMode:
         from config import Config
 
         dm = DefenseManager(Config())
-        result = dm.check(make_portfolio(0.07))
+        result = dm.check(make_portfolio(0.09))
         assert result.recovery_state == RecoveryState.CAUTIOUS
 
     def test_recovery_state(self):
@@ -67,7 +67,7 @@ class TestRecoveryMode:
         from config import Config
 
         dm = DefenseManager(Config())
-        result = dm.check(make_portfolio(0.07))
+        result = dm.check(make_portfolio(0.09))
         params = result.params
-        assert params["max_leverage"] <= 5
-        assert params["min_confidence"] >= 0.5
+        assert params["max_leverage"] <= 7
+        assert params["min_confidence"] >= 0.4

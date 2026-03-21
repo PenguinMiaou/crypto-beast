@@ -62,22 +62,29 @@ class StrategyEngine:
         for name, strategy in self._strategies.items():
             raw_signals = strategy.generate(klines, symbol, regime)
             for sig in raw_signals:
-                # Apply weight: strategy_weight * session_weight
-                weight = self._weights.get(name, 0.2) * session_weights.get(name, 1.0)
-                sig.confidence = round(sig.confidence * weight, 4)
-                # Set timeframe score from MultiTimeframe
+                # Session weight as mild time-of-day adjustment (0.5-1.3 range)
+                # Strategy weight NOT applied to confidence — only used for dedup ranking
+                session_w = session_weights.get(name, 1.0)
+                sig.confidence = round(sig.confidence * session_w, 4)
+                sig._strategy_weight = self._weights.get(name, 0.2)
                 if confluence is not None:
                     sig.timeframe_score = confluence.score
                 signals.append(sig)
 
-        # Deduplicate: per symbol, keep highest confidence direction only
-        best_per_symbol: Dict[str, TradeSignal] = {}
+        # Deduplicate: per symbol, keep highest weighted_score signal
+        # weighted_score = confidence * strategy_weight ensures regime-appropriate
+        # strategies win selection, while raw confidence drives position sizing
+        best_per_symbol: Dict[str, tuple] = {}
         for sig in signals:
             key = sig.symbol
-            if key not in best_per_symbol or sig.confidence > best_per_symbol[key].confidence:
-                best_per_symbol[key] = sig
+            weighted_score = sig.confidence * sig._strategy_weight
+            if key not in best_per_symbol or weighted_score > best_per_symbol[key][0]:
+                best_per_symbol[key] = (weighted_score, sig)
 
-        return sorted(best_per_symbol.values(), key=lambda s: s.confidence, reverse=True)
+        return sorted(
+            [v[1] for v in best_per_symbol.values()],
+            key=lambda s: s.confidence, reverse=True,
+        )
 
     def update_weights(self, new_weights: Dict[str, float]) -> None:
         """Update strategy weights (called by Evolver)."""

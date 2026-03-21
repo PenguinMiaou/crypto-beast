@@ -2,6 +2,8 @@
 """Crypto Beast v1.0 — Autonomous Crypto Trading Bot for Binance Futures."""
 import argparse
 import asyncio
+import fcntl
+import json
 import os
 import signal as signal_module
 import subprocess
@@ -16,6 +18,23 @@ from loguru import logger
 logger.remove()
 logger.add(sys.stderr, level="INFO", format="{time:HH:mm:ss} | {level: <8} | {message}")
 logger.add("logs/crypto_beast_{time:YYYY-MM-DD}.log", rotation="1 day", retention="30 days", level="DEBUG")
+
+
+def _write_watchdog_state_safe(state_path: str, updates: dict) -> None:
+    """Atomic write to watchdog.state with file lock."""
+    if not os.path.exists(state_path):
+        with open(state_path, "w") as f:
+            json.dump({}, f)
+    with open(state_path, "r+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            data = json.load(f)
+            data.update(updates)
+            f.seek(0)
+            f.truncate()
+            json.dump(data, f)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 class GracefulShutdown:
@@ -653,17 +672,11 @@ class TradingBot:
         if not system_healthy:
             logger.warning(f"System not healthy (latency={m['system_guard']._api_latency_ms:.0f}ms), skipping new trades (position monitoring continues)")
 
-        # 3. Build portfolio state
-        positions = await m["executor"].get_positions()
+        # 3. Build portfolio state — single API call for positions + account data
+        positions, equity, available_balance, wallet_balance = await m["executor"].get_positions_and_account()
 
         # Get real equity from Binance (ground truth, not DB calculation)
-        available_balance = 0
-        wallet_balance = 0
         try:
-            account = await self.exchange.fapiPrivateV2GetAccount()
-            equity = float(account.get("totalMarginBalance", 0))
-            available_balance = float(account.get("availableBalance", 0))
-            wallet_balance = float(account.get("totalWalletBalance", 0))
 
             # Update peak wallet (only goes up — deposits + realized gains)
             if wallet_balance > self._peak_wallet:
@@ -696,16 +709,10 @@ class TradingBot:
                 )
                 # Write paused state so bot stays stopped across restarts
                 try:
-                    import json as _json
                     _state_path = os.path.join(os.path.dirname(__file__), "watchdog.state")
-                    with open(_state_path, "r+") as _f:
-                        _wstate = _json.load(_f)
-                        _wstate["paused"] = True
-                        _f.seek(0)
-                        _f.truncate()
-                        _json.dump(_wstate, _f)
-                except Exception:
-                    pass
+                    _write_watchdog_state_safe(_state_path, {"paused": True})
+                except Exception as _e:
+                    logger.error(f"Failed to write watchdog.state: {_e}")
                 return
 
             if self._circuit_breaker_triggered:
@@ -1005,12 +1012,10 @@ class TradingBot:
                 else:
                     plan = m["smart_order"].plan_execution(order, urgency=signal.confidence)
 
-                # Override order type: use LIMIT when confidence <= 0.8 (saves ~50% fees)
-                recommended_type = m["fee_optimizer"].recommend_order_type(signal)
-                if recommended_type == OrderType.LIMIT and plan.entry_tranches:
-                    for tranche in plan.entry_tranches:
-                        tranche["type"] = "LIMIT"
-                        tranche["price"] = signal.entry_price
+                # LIMIT entry override removed (v1.6.0 fix #2):
+                # Small accounts ($200) save ~$0.004/trade with LIMIT vs MARKET,
+                # but risk LIMIT not filling + no SL placement (5min unprotected window).
+                # All entries now use MARKET for reliable fills.
 
                 # Close opposite-direction position first (flip instead of hedge)
                 from core.models import Direction

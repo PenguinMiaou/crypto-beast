@@ -22,9 +22,9 @@ class DefenseResult:
 # Relaxed params for small accounts (vs old: NORMAL 0.5/6, CAUTIOUS 0.75/3/7, RECOVERY 0.8/2/8, CRITICAL 0.9/1/9)
 RECOVERY_PARAMS: Dict[RecoveryState, Dict[str, object]] = {
     RecoveryState.NORMAL:   {"max_leverage": 10, "min_confidence": 0.3, "mtf_min_score": 5},
-    RecoveryState.CAUTIOUS: {"max_leverage": 5,  "min_confidence": 0.5, "mtf_min_score": 6},
-    RecoveryState.RECOVERY: {"max_leverage": 3,  "min_confidence": 0.6, "mtf_min_score": 7},
-    RecoveryState.CRITICAL: {"max_leverage": 2,  "min_confidence": 0.7, "mtf_min_score": 8},
+    RecoveryState.CAUTIOUS: {"max_leverage": 7,  "min_confidence": 0.4, "mtf_min_score": 5},
+    RecoveryState.RECOVERY: {"max_leverage": 5,  "min_confidence": 0.5, "mtf_min_score": 6},
+    RecoveryState.CRITICAL: {"max_leverage": 3,  "min_confidence": 0.6, "mtf_min_score": 7},
 }
 
 
@@ -60,12 +60,12 @@ class DefenseManager:
                 return DefenseResult(ShieldAction.EMERGENCY_CLOSE, RecoveryState.CRITICAL, RECOVERY_PARAMS[RecoveryState.CRITICAL].copy())
             return DefenseResult(ShieldAction.ALREADY_NOTIFIED, RecoveryState.CRITICAL, RECOVERY_PARAMS[RecoveryState.CRITICAL].copy())
 
-        # 2. Daily loss → HALT 24h
+        # 2. Daily loss → HALT (configurable hours, default 8h)
         daily_loss_pct = abs(portfolio.daily_pnl) / max(portfolio.peak_equity, 1.0)
         if portfolio.daily_pnl < 0 and daily_loss_pct >= self.config.max_daily_loss:
             if not self._halted:
                 self._halted = True
-                self._cooldown_until = now + timedelta(hours=24)
+                self._cooldown_until = now + timedelta(hours=self.config.halt_cooldown_hours)
                 self._save_state()
             # Log every 6 hours
             if self._last_log_time is None or (now - self._last_log_time).total_seconds() >= self.LOG_INTERVAL_HOURS * 3600:

@@ -1,10 +1,12 @@
 """Live Binance Futures executor — direct API for hedge mode compatibility."""
+import aiohttp
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Dict
 from uuid import uuid4
 
+from dotenv import dotenv_values
 from loguru import logger
 
 from core.database import Database
@@ -31,6 +33,10 @@ class LiveExecutor:
         self.exchange = exchange
         self.db = db
         self.rate_limiter = rate_limiter
+        env = dotenv_values(str(Path(__file__).parent.parent / ".env"))
+        self._api_key = env.get("BINANCE_API_KEY", "")
+        self._api_secret = env.get("BINANCE_API_SECRET", "")
+        self._http_session: Optional[aiohttp.ClientSession] = None
 
     @staticmethod
     def _to_binance_symbol(symbol: str) -> str:
@@ -65,6 +71,16 @@ class LiveExecutor:
         # Ensure minimum quantity
         min_qty = 10 ** (-precision)
         return max(rounded, min_qty)
+
+    async def _get_http_session(self) -> aiohttp.ClientSession:
+        if self._http_session is None or self._http_session.closed:
+            self._http_session = aiohttp.ClientSession()
+        return self._http_session
+
+    async def close(self):
+        """Close persistent HTTP session."""
+        if self._http_session and not self._http_session.closed:
+            await self._http_session.close()
 
     async def _place_order(self, symbol: str, side: str, position_side: str,
                             order_type: str, quantity: float,
@@ -254,13 +270,8 @@ class LiveExecutor:
 
         Required for STOP_MARKET/TAKE_PROFIT_MARKET in hedge mode since 2025-12-09.
         """
-        import aiohttp, hmac, hashlib, time as _time
+        import hmac, hashlib, time as _time
         from urllib.parse import urlencode
-        from dotenv import dotenv_values
-
-        env = dotenv_values(str(Path(__file__).parent.parent / ".env"))
-        api_key = env.get("BINANCE_API_KEY", "")
-        api_secret = env.get("BINANCE_API_SECRET", "")
 
         params = {
             "symbol": binance_sym,
@@ -274,16 +285,16 @@ class LiveExecutor:
             "timestamp": int(_time.time() * 1000),
         }
         query = urlencode(params)
-        signature = hmac.new(api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+        signature = hmac.new(self._api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
         url = f"https://fapi.binance.com/fapi/v1/algoOrder?{query}&signature={signature}"
 
         await self.rate_limiter.acquire_order_slot()
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers={"X-MBX-APIKEY": api_key}) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    raise Exception(f"Algo order failed ({resp.status}): {text}")
-                return await resp.json()
+        session = await self._get_http_session()
+        async with session.post(url, headers={"X-MBX-APIKEY": self._api_key}) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise Exception(f"Algo order failed ({resp.status}): {text}")
+            return await resp.json()
 
     async def _place_sl_limit(self, symbol: str, side: str, position_side: str,
                                qty: float, stop_price: float,
@@ -380,6 +391,40 @@ class LiveExecutor:
                 logger.error(f"DB fallback also failed: {e2}")
                 return []
 
+    async def get_positions_and_account(self):
+        """Fetch positions + account data in single API call.
+
+        Returns (positions, equity, available_balance, wallet_balance).
+        equity = totalMarginBalance (wallet + unrealized PnL).
+        wallet_balance = totalWalletBalance (realized only, used for peak tracking).
+        """
+        try:
+            await self.rate_limiter.acquire_data_slot()
+            account = await self.exchange.fapiPrivateV2GetAccount()
+            positions = []
+            for pos in account.get("positions", []):
+                amt = float(pos.get("positionAmt", 0))
+                if amt == 0:
+                    continue
+                positions.append(Position(
+                    symbol=pos["symbol"],
+                    direction=Direction.LONG if amt > 0 else Direction.SHORT,
+                    entry_price=float(pos.get("entryPrice", 0)),
+                    quantity=abs(amt),
+                    leverage=int(pos.get("leverage", 1)),
+                    unrealized_pnl=float(pos.get("unrealizedProfit", 0)),
+                    strategy="exchange",  # placeholder, reconciliation overrides
+                    entry_time=datetime.now(timezone.utc),  # placeholder
+                    current_stop=0.0,
+                ))
+            equity = float(account.get("totalMarginBalance", 0))
+            available = float(account.get("availableBalance", 0))
+            wallet_balance = float(account.get("totalWalletBalance", 0))
+            return positions, equity, available, wallet_balance
+        except Exception as e:
+            logger.error(f"Failed to fetch account: {e}")
+            return [], 0.0, 0.0, 0.0
+
     async def close_position(self, position: Position,
                               order_type: OrderType = OrderType.MARKET) -> ExecutionResult:
         """Close a position on exchange."""
@@ -455,13 +500,8 @@ class LiveExecutor:
         Returns:
             Number of algo orders cancelled.
         """
-        import aiohttp, hmac, hashlib, time as _time
+        import hmac, hashlib, time as _time
         from urllib.parse import urlencode
-        from dotenv import dotenv_values
-
-        env = dotenv_values(str(Path(__file__).parent.parent / ".env"))
-        api_key = env.get("BINANCE_API_KEY", "")
-        api_secret = env.get("BINANCE_API_SECRET", "")
 
         # Step 1: Query open algo orders
         query_params: Dict[str, object] = {
@@ -470,18 +510,18 @@ class LiveExecutor:
         if symbol:
             query_params["symbol"] = symbol
         query = urlencode(query_params)
-        signature = hmac.new(api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+        signature = hmac.new(self._api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
         url = f"https://fapi.binance.com/fapi/v1/openAlgoOrders?{query}&signature={signature}"
 
         cancelled = 0
         try:
             await self.rate_limiter.acquire_order_slot()
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers={"X-MBX-APIKEY": api_key}) as resp:
-                    if resp.status != 200:
-                        logger.warning(f"Failed to query algo orders: {await resp.text()}")
-                        return 0
-                    data = await resp.json()
+            session = await self._get_http_session()
+            async with session.get(url, headers={"X-MBX-APIKEY": self._api_key}) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Failed to query algo orders: {await resp.text()}")
+                    return 0
+                data = await resp.json()
 
             orders = data if isinstance(data, list) else data.get("orders", [])
 
@@ -507,16 +547,16 @@ class LiveExecutor:
                         "timestamp": int(_time.time() * 1000),
                     }
                     cquery = urlencode(cancel_params)
-                    csig = hmac.new(api_secret.encode(), cquery.encode(), hashlib.sha256).hexdigest()
+                    csig = hmac.new(self._api_secret.encode(), cquery.encode(), hashlib.sha256).hexdigest()
                     curl = f"https://fapi.binance.com/fapi/v1/algoOrder?{cquery}&signature={csig}"
 
                     await self.rate_limiter.acquire_order_slot()
-                    async with aiohttp.ClientSession() as session:
-                        async with session.delete(curl, headers={"X-MBX-APIKEY": api_key}) as cresp:
-                            if cresp.status == 200:
-                                cancelled += 1
-                            else:
-                                logger.warning(f"Failed to cancel algoId={algo_id}: {await cresp.text()}")
+                    session = await self._get_http_session()
+                    async with session.delete(curl, headers={"X-MBX-APIKEY": self._api_key}) as cresp:
+                        if cresp.status == 200:
+                            cancelled += 1
+                        else:
+                            logger.warning(f"Failed to cancel algoId={algo_id}: {await cresp.text()}")
                 except Exception as e:
                     logger.warning(f"Error cancelling algoId={algo_id}: {e}")
 
@@ -546,31 +586,26 @@ class LiveExecutor:
         Called on startup after reconciliation to ensure all positions have
         exchange-level SL protection. Returns number of SL orders placed.
         """
-        import aiohttp, hmac, hashlib, time as _time
+        import hmac, hashlib, time as _time
         from urllib.parse import urlencode
-        from dotenv import dotenv_values
-
-        env = dotenv_values(str(Path(__file__).parent.parent / ".env"))
-        api_key = env.get("BINANCE_API_KEY", "")
-        api_secret = env.get("BINANCE_API_SECRET", "")
 
         # Step 1: Get open algo orders to know which positions already have SL
         query_params = {"timestamp": int(_time.time() * 1000)}
         query = urlencode(query_params)
-        signature = hmac.new(api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+        signature = hmac.new(self._api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
         url = f"https://fapi.binance.com/fapi/v1/openAlgoOrders?{query}&signature={signature}"
 
         existing_sl = set()  # (symbol, positionSide) that already have SL
         all_algo_orders = []
         try:
             await self.rate_limiter.acquire_order_slot()
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers={"X-MBX-APIKEY": api_key}) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        all_algo_orders = data if isinstance(data, list) else data.get("orders", [])
-                        for o in all_algo_orders:
-                            existing_sl.add((o.get("symbol"), o.get("positionSide")))
+            session = await self._get_http_session()
+            async with session.get(url, headers={"X-MBX-APIKEY": self._api_key}) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    all_algo_orders = data if isinstance(data, list) else data.get("orders", [])
+                    for o in all_algo_orders:
+                        existing_sl.add((o.get("symbol"), o.get("positionSide")))
         except Exception as e:
             logger.warning(f"Failed to query existing algo orders: {e}")
 
@@ -641,13 +676,13 @@ class LiveExecutor:
                         "timestamp": int(_time.time() * 1000),
                     }
                     cquery = urlencode(cancel_params)
-                    csig = hmac.new(api_secret.encode(), cquery.encode(), hashlib.sha256).hexdigest()
+                    csig = hmac.new(self._api_secret.encode(), cquery.encode(), hashlib.sha256).hexdigest()
                     curl = f"https://fapi.binance.com/fapi/v1/algoOrder?{cquery}&signature={csig}"
                     await self.rate_limiter.acquire_order_slot()
-                    async with aiohttp.ClientSession() as session:
-                        async with session.delete(curl, headers={"X-MBX-APIKEY": api_key}) as cresp:
-                            if cresp.status == 200:
-                                logger.info(f"Cleaned orphan algo: {key[0]} {key[1]} algoId={algo_id}")
+                    session = await self._get_http_session()
+                    async with session.delete(curl, headers={"X-MBX-APIKEY": self._api_key}) as cresp:
+                        if cresp.status == 200:
+                            logger.info(f"Cleaned orphan algo: {key[0]} {key[1]} algoId={algo_id}")
                 except Exception as e:
                     logger.warning(f"Failed to clean orphan algo {algo_id}: {e}")
 

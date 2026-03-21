@@ -69,6 +69,7 @@ class TradeSignal:
     regime: MarketRegime     # Market regime at signal time
     timeframe_score: int     # MultiTimeframe confluence score
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    _strategy_weight: float = field(default=0.2, repr=False, compare=False)
 
 # === Validated Order (Layer 4 output) ===
 

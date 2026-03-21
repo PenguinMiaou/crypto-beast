@@ -35,28 +35,28 @@ class TestDefenseManager:
         assert result.recovery_state == RecoveryState.NORMAL
         assert result.params["max_leverage"] == 10
 
-    def test_cautious_at_5pct(self):
+    def test_cautious_at_8pct(self):
         from defense.defense_manager import DefenseManager
         dm = DefenseManager(Config())
-        # 6% drawdown (above 5% cautious threshold)
-        result = dm.check(_make_portfolio(94, 100))
+        # 9% drawdown (above 8% cautious threshold)
+        result = dm.check(_make_portfolio(91, 100))
         assert result.recovery_state == RecoveryState.CAUTIOUS
-        assert result.params["max_leverage"] == 5
+        assert result.params["max_leverage"] == 7
 
     def test_recovery_at_10pct(self):
         from defense.defense_manager import DefenseManager
         dm = DefenseManager(Config())
         result = dm.check(_make_portfolio(88, 100))
         assert result.recovery_state == RecoveryState.RECOVERY
-        assert result.params["max_leverage"] == 3
+        assert result.params["max_leverage"] == 5
 
     def test_critical_at_20pct(self):
         from defense.defense_manager import DefenseManager
         dm = DefenseManager(Config())
         result = dm.check(_make_portfolio(79, 100))
         assert result.recovery_state == RecoveryState.CRITICAL
-        assert result.params["max_leverage"] == 2
-        assert result.params["min_confidence"] == 0.7
+        assert result.params["max_leverage"] == 3
+        assert result.params["min_confidence"] == 0.6
 
     def test_halt_at_10pct_daily(self):
         from defense.defense_manager import DefenseManager
@@ -108,5 +108,21 @@ class TestDefenseManager:
         from defense.defense_manager import RECOVERY_PARAMS
         # Old NORMAL had min_confidence 0.5, new has 0.3
         assert RECOVERY_PARAMS[RecoveryState.NORMAL]["min_confidence"] == 0.3
-        # Old CRITICAL had max_leverage 1, new has 2
-        assert RECOVERY_PARAMS[RecoveryState.CRITICAL]["max_leverage"] == 2
+        # Old CRITICAL had max_leverage 1, new has 3
+        assert RECOVERY_PARAMS[RecoveryState.CRITICAL]["max_leverage"] == 3
+
+    def test_halt_duration_8h(self):
+        """Fix #11: HALT should be 8h, not 24h."""
+        from defense.defense_manager import DefenseManager
+        from datetime import datetime, timezone
+        config = Config()
+        dm = DefenseManager(config)
+        portfolio = Portfolio(
+            equity=90.0, available_balance=90.0, positions=[],
+            peak_equity=100.0, locked_capital=0.0, daily_pnl=-11.0,
+            total_fees_today=0.0, drawdown_pct=0.10,
+        )
+        result = dm.check(portfolio)
+        assert dm._cooldown_until is not None
+        hours = (dm._cooldown_until - datetime.now(timezone.utc)).total_seconds() / 3600
+        assert 7.0 < hours < 8.5, f"HALT should be ~8h, got {hours:.1f}h"

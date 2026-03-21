@@ -17,16 +17,20 @@ class Config:
     leverage_medium_confidence: int = 5
 
     # Risk
-    max_risk_per_trade: float = 0.02
+    max_risk_per_trade: float = 0.03
     max_concurrent_positions: int = 3
     max_daily_loss: float = 0.10
     max_total_drawdown: float = 0.30
     circuit_breaker_pct: float = 0.85  # Emergency close if wallet < 85% of peak wallet
+    max_directional_leverage: float = 15.0
+    max_correlated_same_dir: int = 2
+    correlation_penalty: float = 0.6
 
     # Recovery thresholds
-    recovery_cautious: float = 0.05
+    recovery_cautious: float = 0.08
     recovery_recovery: float = 0.10
     recovery_critical: float = 0.20
+    halt_cooldown_hours: int = 8
 
     # Fees
     maker_fee: float = 0.0002

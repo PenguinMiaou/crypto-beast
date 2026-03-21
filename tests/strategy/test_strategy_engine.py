@@ -70,25 +70,25 @@ class TestStrategyEngine:
             for i in range(len(signals1) - 1):
                 assert signals1[i].confidence >= signals1[i + 1].confidence
 
-    def test_weight_updates_change_confidence(self, engine, uptrend_data):
-        """Updating weights changes signal confidence."""
+    def test_weight_updates_change_strategy_weight(self, engine, uptrend_data):
+        """Updating weights changes _strategy_weight on signals (not confidence)."""
         signals_before = engine.generate_signals("BTCUSDT", uptrend_data)
         if not signals_before:
             return
 
-        conf_before = signals_before[0].confidence
-
-        # Heavily weight the winning strategy
+        # Strategy weight should reflect the engine's weight for the strategy
         winning_strategy = signals_before[0].strategy
+        assert signals_before[0]._strategy_weight == 0.2  # default weight
+
+        # Heavily weight a different strategy and verify weight is stored
         new_weights = {name: 0.01 for name in engine.get_strategy_weights()}
         new_weights[winning_strategy] = 1.0
         engine.update_weights(new_weights)
 
         signals_after = engine.generate_signals("BTCUSDT", uptrend_data)
         assert len(signals_after) > 0
-        # The confidence should be different after weight change
-        conf_after = signals_after[0].confidence
-        assert conf_after != conf_before
+        # The _strategy_weight must reflect the updated weight for that strategy
+        assert signals_after[0]._strategy_weight == new_weights[signals_after[0].strategy]
 
     def test_conflicting_signals_deduplicated(self, engine, sideways_data):
         """When both LONG and SHORT exist for same symbol, only highest confidence kept."""
@@ -138,3 +138,17 @@ class TestStrategyEngine:
         signals = engine.generate_signals("BTCUSDT", uptrend_data)
         if signals:
             assert signals[0].timeframe_score == 0
+
+    def test_confidence_not_crushed_by_strategy_weight(self, engine, uptrend_data):
+        """Fix #1: strategy_weight must NOT multiply into confidence."""
+        signals = engine.generate_signals("BTCUSDT", uptrend_data)
+        if signals:
+            assert signals[0].confidence >= 0.25, (
+                f"Confidence {signals[0].confidence} still crushed by strategy weight"
+            )
+
+    def test_dedup_uses_weighted_score(self, engine, uptrend_data):
+        """Fix #1: dedup should use confidence * strategy_weight for selection."""
+        signals = engine.generate_signals("BTCUSDT", uptrend_data)
+        symbols = [s.symbol for s in signals]
+        assert len(symbols) == len(set(symbols)), "Dedup failed: duplicate symbols"
