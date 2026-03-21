@@ -96,3 +96,15 @@ class TestTrendFollower:
         signals = tf.generate(uptrend_data, "BTCUSDT", MarketRegime.TRENDING_UP)
         if signals:
             assert signals[0].strategy == "trend_follower"
+
+    def test_confidence_varies_with_strength(self, uptrend_data, downtrend_data):
+        """Fix #15: confidence should vary with signal strength."""
+        from strategy.trend_follower import TrendFollower
+
+        tf = TrendFollower()
+        signals_up = tf.generate(uptrend_data, "BTCUSDT", MarketRegime.TRENDING_UP)
+        signals_down = tf.generate(downtrend_data, "BTCUSDT", MarketRegime.TRENDING_DOWN)
+        signals = signals_up + signals_down
+        if len(signals) >= 2:
+            confs = [s.confidence for s in signals]
+            assert max(confs) - min(confs) >= 0.02, f"Confidence too uniform: {confs[:5]}"

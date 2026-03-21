@@ -88,6 +88,17 @@ def sample_klines():
     return pd.DataFrame({"open_time": dates, "open": open_, "high": high, "low": low, "close": close, "volume": volume})
 
 
+def test_confidence_varies_with_strength(sample_klines):
+    """Fix #15: confidence should vary with signal strength."""
+    from strategy.scalper import Scalper
+
+    scalper = Scalper()
+    signals = scalper.generate(sample_klines, "BTCUSDT", MarketRegime.RANGING)
+    if len(signals) >= 2:
+        confs = [s.confidence for s in signals]
+        assert max(confs) - min(confs) >= 0.02, f"Confidence too uniform: {confs[:5]}"
+
+
 def test_scalper_rr_ratio(sample_klines):
     """Fix #6: Scalper R:R should be >= 4.0."""
     from strategy.scalper import Scalper

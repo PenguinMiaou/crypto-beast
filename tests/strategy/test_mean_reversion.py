@@ -96,3 +96,16 @@ class TestMeanReversion:
         signals = mr.generate(oversold_data, "BTCUSDT", MarketRegime.RANGING)
         if signals:
             assert signals[0].strategy == "mean_reversion"
+
+    def test_confidence_varies_with_strength(self, oversold_data):
+        """Fix #15: confidence varies across regimes — ranging boosts, trending penalises."""
+        from strategy.mean_reversion import MeanReversion
+
+        mr = MeanReversion()
+        # Same oversold data: RANGING regime gives +0.1 bonus, TRENDING regime gives -0.2 penalty
+        signals_ranging = mr.generate(oversold_data, "BTCUSDT", MarketRegime.RANGING)
+        signals_trending = mr.generate(oversold_data, "BTCUSDT", MarketRegime.TRENDING_UP)
+        signals = signals_ranging + signals_trending
+        if len(signals) >= 2:
+            confs = [s.confidence for s in signals]
+            assert max(confs) - min(confs) >= 0.02, f"Confidence too uniform: {confs[:5]}"

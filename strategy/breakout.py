@@ -65,14 +65,16 @@ class Breakout(BaseStrategy):
 
         # LONG breakout: close above upper band
         if price > upper:
-            confidence = 0.6
-            if volume_ratio > 2.0:
-                confidence += 0.1
+            # Dynamic confidence based on volume ratio strength
+            base_conf = 0.40 + min(0.40, (volume_ratio - 1.0) * 0.15)
+            if is_squeeze:
+                base_conf += 0.1
+            confidence = min(0.95, max(0.3, base_conf))
 
             signals.append(TradeSignal(
                 symbol=symbol,
                 direction=Direction.LONG,
-                confidence=round(min(0.95, confidence), 3),
+                confidence=round(confidence, 3),
                 entry_price=price,
                 stop_loss=round(price - 2.0 * atr, 2),
                 take_profit=round(price + (price - lower), 2),
@@ -83,14 +85,16 @@ class Breakout(BaseStrategy):
 
         # SHORT breakout: close below lower band
         elif price < lower:
-            confidence = 0.6
-            if volume_ratio > 2.0:
-                confidence += 0.1
+            # Dynamic confidence based on volume ratio strength
+            base_conf = 0.40 + min(0.40, (volume_ratio - 1.0) * 0.15)
+            if is_squeeze:
+                base_conf += 0.1
+            confidence = min(0.95, max(0.3, base_conf))
 
             signals.append(TradeSignal(
                 symbol=symbol,
                 direction=Direction.SHORT,
-                confidence=round(min(0.95, confidence), 3),
+                confidence=round(confidence, 3),
                 entry_price=price,
                 stop_loss=round(price + 2.0 * atr, 2),
                 take_profit=round(price - (upper - price), 2),

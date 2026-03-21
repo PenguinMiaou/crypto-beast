@@ -37,13 +37,15 @@ class TrendFollower(BaseStrategy):
 
         # Bullish crossover or fast above slow
         if last["ema_fast"] > last["ema_slow"]:
-            # Confidence based on regime and crossover strength
-            spread = (last["ema_fast"] - last["ema_slow"]) / price
-            confidence = min(0.9, 0.5 + spread * 100)
+            # Dynamic confidence based on EMA spread percentage
+            spread_pct = (last["ema_fast"] - last["ema_slow"]) / price
+            base_conf = 0.35 + min(0.45, spread_pct * 100)
+            regime_adj = 0.0
             if regime == MarketRegime.TRENDING_UP:
-                confidence = min(0.95, confidence + 0.1)
+                regime_adj = 0.1
             elif regime in (MarketRegime.RANGING, MarketRegime.TRENDING_DOWN):
-                confidence *= 0.6
+                regime_adj = -0.15
+            confidence = min(0.95, max(0.3, base_conf + regime_adj))
 
             if confidence >= 0.3:
                 signals.append(TradeSignal(
@@ -60,12 +62,14 @@ class TrendFollower(BaseStrategy):
 
         # Bearish: fast below slow
         elif last["ema_fast"] < last["ema_slow"]:
-            spread = (last["ema_slow"] - last["ema_fast"]) / price
-            confidence = min(0.9, 0.5 + spread * 100)
+            spread_pct = (last["ema_slow"] - last["ema_fast"]) / price
+            base_conf = 0.35 + min(0.45, spread_pct * 100)
+            regime_adj = 0.0
             if regime == MarketRegime.TRENDING_DOWN:
-                confidence = min(0.95, confidence + 0.1)
+                regime_adj = 0.1
             elif regime in (MarketRegime.RANGING, MarketRegime.TRENDING_UP):
-                confidence *= 0.6
+                regime_adj = -0.15
+            confidence = min(0.95, max(0.3, base_conf + regime_adj))
 
             if confidence >= 0.3:
                 signals.append(TradeSignal(

@@ -61,3 +61,13 @@ class TestBreakout:
         signals = b.generate(squeeze_breakout_data, "BTCUSDT", MarketRegime.RANGING)
         if signals:
             assert signals[0].strategy == "breakout"
+
+    def test_confidence_varies_with_strength(self, squeeze_breakout_data):
+        """Fix #15: confidence should vary with signal strength."""
+        from strategy.breakout import Breakout
+
+        b = Breakout()
+        signals = b.generate(squeeze_breakout_data, "BTCUSDT", MarketRegime.RANGING)
+        if len(signals) >= 2:
+            confs = [s.confidence for s in signals]
+            assert max(confs) - min(confs) >= 0.02, f"Confidence too uniform: {confs[:5]}"

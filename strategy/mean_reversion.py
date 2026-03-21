@@ -40,16 +40,23 @@ class MeanReversion(BaseStrategy):
 
         # LONG: close < lower_band AND RSI < 30
         if price < lower and rsi < 30:
-            confidence = 0.6
+            # Dynamic confidence: further below lower BB edge = stronger signal
+            if bb_width > 0:
+                dist_ratio = (price - lower) / bb_width  # negative when below lower
+                base_conf = 0.40 + min(0.40, (1.0 - dist_ratio) * 0.5)
+            else:
+                base_conf = 0.40
+            regime_adj = 0.0
             if regime == MarketRegime.RANGING:
-                confidence += 0.1
+                regime_adj = 0.1
             elif regime in (MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN):
-                confidence -= 0.2
+                regime_adj = -0.2
+            confidence = min(0.95, max(0.3, base_conf + regime_adj))
 
             signals.append(TradeSignal(
                 symbol=symbol,
                 direction=Direction.LONG,
-                confidence=round(max(0.1, confidence), 3),
+                confidence=round(confidence, 3),
                 entry_price=price,
                 stop_loss=round(lower - 0.5 * bb_width, 2),
                 take_profit=round(upper, 2),
@@ -60,16 +67,23 @@ class MeanReversion(BaseStrategy):
 
         # SHORT: close > upper_band AND RSI > 70
         elif price > upper and rsi > 70:
-            confidence = 0.6
+            # Dynamic confidence: further above upper BB edge = stronger signal
+            if bb_width > 0:
+                dist_ratio = (upper - price) / bb_width  # negative when above upper
+                base_conf = 0.40 + min(0.40, (1.0 - dist_ratio) * 0.5)
+            else:
+                base_conf = 0.40
+            regime_adj = 0.0
             if regime == MarketRegime.RANGING:
-                confidence += 0.1
+                regime_adj = 0.1
             elif regime in (MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN):
-                confidence -= 0.2
+                regime_adj = -0.2
+            confidence = min(0.95, max(0.3, base_conf + regime_adj))
 
             signals.append(TradeSignal(
                 symbol=symbol,
                 direction=Direction.SHORT,
-                confidence=round(max(0.1, confidence), 3),
+                confidence=round(confidence, 3),
                 entry_price=price,
                 stop_loss=round(upper + 0.5 * bb_width, 2),
                 take_profit=round(lower, 2),

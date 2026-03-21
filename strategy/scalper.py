@@ -33,9 +33,11 @@ class Scalper(BaseStrategy):
 
         # LONG: RSI(2) < 10
         if rsi2 < 10:
-            confidence = 0.5
-            if regime == MarketRegime.RANGING:
-                confidence += 0.1
+            # Dynamic confidence: more extreme RSI = higher confidence
+            rsi_extreme_distance = min(abs(rsi2), abs(100 - rsi2))
+            base_conf = 0.35 + min(0.35, (50 - rsi_extreme_distance) / 50 * 0.35)
+            regime_adj = 0.1 if regime == MarketRegime.RANGING else 0.0
+            confidence = min(0.95, max(0.3, base_conf + regime_adj))
 
             signals.append(TradeSignal(
                 symbol=symbol,
@@ -51,9 +53,11 @@ class Scalper(BaseStrategy):
 
         # SHORT: RSI(2) > 90
         elif rsi2 > 90:
-            confidence = 0.5
-            if regime == MarketRegime.RANGING:
-                confidence += 0.1
+            # Dynamic confidence: more extreme RSI = higher confidence
+            rsi_extreme_distance = min(abs(rsi2), abs(100 - rsi2))
+            base_conf = 0.35 + min(0.35, (50 - rsi_extreme_distance) / 50 * 0.35)
+            regime_adj = 0.1 if regime == MarketRegime.RANGING else 0.0
+            confidence = min(0.95, max(0.3, base_conf + regime_adj))
 
             signals.append(TradeSignal(
                 symbol=symbol,

@@ -125,6 +125,16 @@ class TestMultiTimeframe:
     def test_get_confluence_none_for_unknown(self):
         assert self.mt.get_confluence("UNKNOWN") is None
 
+    # --- Fix #14: neutral vote for flat market ---
+    def test_vote_returns_zero_for_flat_market(self):
+        """Fix #14: _vote should return 0 when EMA spread < 0.1%."""
+        n = 50
+        close = pd.Series([65000.0] * n)
+        df = pd.DataFrame({"close": close})
+        from analysis.multi_timeframe import MultiTimeframe
+        result = MultiTimeframe._vote(df)
+        assert result == 0, f"Flat market should give neutral vote, got {result}"
+
     # --- Edge: missing timeframes ---
     def test_partial_timeframes(self):
         klines = {

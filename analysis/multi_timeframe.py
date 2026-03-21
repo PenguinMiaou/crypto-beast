@@ -94,10 +94,11 @@ class MultiTimeframe:
 
     @staticmethod
     def _vote(df: pd.DataFrame) -> int:
-        """Return +1 if EMA9 > EMA21 on latest bar, else -1."""
+        """EMA9/21 gradient vote: +1 bullish, -1 bearish, 0 neutral."""
         close = df["close"]
         ema9 = ta.trend.ema_indicator(close, window=9)
         ema21 = ta.trend.ema_indicator(close, window=21)
-        latest_ema9 = ema9.iloc[-1]
-        latest_ema21 = ema21.iloc[-1]
-        return 1 if latest_ema9 > latest_ema21 else -1
+        spread = (ema9.iloc[-1] - ema21.iloc[-1]) / close.iloc[-1]
+        if abs(spread) < 0.001:  # 0.1% threshold for neutral
+            return 0
+        return 1 if spread > 0 else -1

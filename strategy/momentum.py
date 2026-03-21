@@ -45,16 +45,19 @@ class Momentum(BaseStrategy):
 
         # LONG: MACD hist > 0 and increasing and close > EMA20
         if h3 > 0 and h3 > h2 > h1 and price > ema20:
-            confidence = 0.55
+            # Dynamic confidence based on MACD histogram strength relative to ATR
+            hist_strength = abs(h3) / atr if atr > 0 else 0
+            base_conf = 0.35 + min(0.45, hist_strength * 8)
+            regime_adj = 0.0
             if regime == MarketRegime.TRENDING_UP:
-                confidence += 0.1
-            if volume_ratio > 1.2:
-                confidence += 0.15
+                regime_adj += 0.1
+            volume_adj = 0.15 if volume_ratio > 1.2 else 0.0
+            confidence = min(0.95, max(0.3, base_conf + regime_adj + volume_adj))
 
             signals.append(TradeSignal(
                 symbol=symbol,
                 direction=Direction.LONG,
-                confidence=round(min(0.95, confidence), 3),
+                confidence=round(confidence, 3),
                 entry_price=price,
                 stop_loss=round(price - atr * 1.5, 2),
                 take_profit=round(price + atr * 3.0, 2),
@@ -65,16 +68,19 @@ class Momentum(BaseStrategy):
 
         # SHORT: MACD hist < 0 and decreasing and close < EMA20
         elif h3 < 0 and h3 < h2 < h1 and price < ema20:
-            confidence = 0.55
+            # Dynamic confidence based on MACD histogram strength relative to ATR
+            hist_strength = abs(h3) / atr if atr > 0 else 0
+            base_conf = 0.35 + min(0.45, hist_strength * 8)
+            regime_adj = 0.0
             if regime == MarketRegime.TRENDING_DOWN:
-                confidence += 0.1
-            if volume_ratio > 1.2:
-                confidence += 0.15
+                regime_adj += 0.1
+            volume_adj = 0.15 if volume_ratio > 1.2 else 0.0
+            confidence = min(0.95, max(0.3, base_conf + regime_adj + volume_adj))
 
             signals.append(TradeSignal(
                 symbol=symbol,
                 direction=Direction.SHORT,
-                confidence=round(min(0.95, confidence), 3),
+                confidence=round(confidence, 3),
                 entry_price=price,
                 stop_loss=round(price + atr * 1.5, 2),
                 take_profit=round(price - atr * 3.0, 2),
