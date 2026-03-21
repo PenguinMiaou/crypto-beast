@@ -3,7 +3,7 @@
 ## Environment
 - Python 3.9.6 — use `Optional[X]` not `X | None`, `Dict`/`List` not `dict`/`list`
 - Venv at `.venv/`
-- Tests: `source .venv/bin/activate && python -m pytest -q` (409 tests)
+- Tests: `source .venv/bin/activate && python -m pytest -q` (434 tests)
 - Entry point: `crypto_system.py` (NOT main.py — renamed to avoid conflict with other projects)
 
 ## Running
@@ -66,6 +66,8 @@
 - Flip when full: positions full still generates signals for held symbols; opposite-direction signal triggers flip (close+reopen)
 - LIMIT orders may return `executedQty=0` (pending) → `_place_exit_orders` skips SL → periodic check fixes this
 - In hedge mode, SELL with positionSide=LONG on empty position = -2022 (not -2019)
+- `executor.close()` must be called on shutdown (persistent aiohttp session)
+- `get_positions_and_account()` returns (positions, equity, available, wallet_balance) in single API call
 
 ## Reconciliation
 - On startup: `reconcile_with_exchange()` syncs DB with Binance
@@ -86,20 +88,22 @@
 
 ## Position Management
 - Static SL/TP: checked every 5 seconds by PositionManager
-- Profit protection: activates at 2% profit, closes when 50% of peak profit given back
+- Profit protection: activates at 8% profit, closes when 35% of peak profit given back
 - Exchange-level SL/TP via Algo Order API (survive bot crash)
-- Config: `profit_protect_activation_pct` (0.02), `profit_protect_drawback_pct` (0.50)
+- Config: `profit_protect_activation_pct` (0.08), `profit_protect_drawback_pct` (0.35)
+- Breakeven SL: when leveraged PnL > 5%, SL moves to entry + fees
+- Position timeout: 48h stale positions with PnL in [-1%, +2%] auto-closed
 
 ## DefenseManager (unified defense — replaced old EmergencyShield + RecoveryMode)
 - Single module: `defense/defense_manager.py` — replaces `execution/emergency_shield.py` + `execution/recovery_mode.py` (both deleted)
 - Unified state machine: NORMAL → CAUTIOUS → RECOVERY → CRITICAL → HALT → EMERGENCY_CLOSE
-- Triggers: daily loss >= 10% → HALT 24h; total drawdown >= 30% → EMERGENCY_CLOSE
+- Triggers: daily loss >= 10% → HALT 8h; total drawdown >= 30% → EMERGENCY_CLOSE
 - **HALT state persisted to disk** (`shield.state`) — survives restarts (old bug: was in-memory only)
 - Relaxed params for small accounts:
   - NORMAL: 10x leverage, 0.3 min confidence, MTF 5
-  - CAUTIOUS (5% dd): 5x, 0.5, MTF 6
-  - RECOVERY (10% dd): 3x, 0.6, MTF 7
-  - CRITICAL (20% dd): 2x, 0.7, MTF 8 (old was 1x/0.9 which killed all trading)
+  - CAUTIOUS (8% dd): 7x, 0.4, MTF 6
+  - RECOVERY (10% dd): 5x, 0.5, MTF 7
+  - CRITICAL (20% dd): 3x, 0.6, MTF 8 (old was 1x/0.9 which killed all trading)
 - `ShieldAction.ALREADY_NOTIFIED` = already halted, skip silently in main loop
 - Resume notification sent via `pop_just_resumed()` (one-shot flag)
 - Notifications: sent once on trigger, once on resume — NOT every cycle
@@ -114,8 +118,9 @@
 - `watchdog_interventions` — watchdog event log (level, action, outcome, claude_used)
 
 ## Signal Pipeline (2026-03-17 audit improvements)
-- Layer 1 intel modules (whale/sentiment/liquidation/orderbook) now feed into signal confidence (+0.03 per agreeing module, -0.05 per conflicting)
-- MTF filter activated: blocks signals that CONFLICT with strong higher-timeframe direction; weak/neutral MTF lets signals through
+- Layer 1 intel modules (whale/sentiment/liquidation/orderbook) now feed into signal confidence (+0.01 per agreeing module, -0.02 per conflicting) — lowered from +0.03/-0.05 until WebSocket data sources active
+- MTF filter activated: blocks signals that CONFLICT with strong higher-timeframe direction; weak/neutral MTF lets signals through; threshold lowered from 6 to 4; _vote() now supports neutral (0) for flat markets
+- Strategy confidence is continuous (based on signal strength), not hardcoded jumps
 - No double dedup: StrategyEngine deduplicates; main loop no longer re-deduplicates (allows pattern scanner signals)
 - Paper mode uses same confidence thresholds as live (was 0.15, now matches live 0.3)
 - Slippage monitoring: logs warning if actual vs expected entry > 0.1%
@@ -126,6 +131,10 @@
 - Position monitoring (SL/TP/profit protection) runs EVERY cycle even when API latency is high — only new trade opening is gated by health check
 - Skip signal generation entirely when positions full (`max_concurrent_positions`) — saves API calls
 - RiskManager rejects signals where TP distance < 3x round-trip fees (prevents 6-second TP trades that net negative)
+- Directional exposure limit: same-direction max 15x equivalent leverage
+- Correlated assets (BTC/ETH/SOL) max 2 same-direction positions, penalty 0.6
+- Continuous position scaling: base_risk 3%, multiplier 1.0-3.5x based on confidence
+- LIMIT entry override removed: small accounts always use MARKET for reliable fills
 - FeeOptimizer recommends LIMIT orders when confidence ≤ 0.8 (maker 0.02% vs taker 0.04%)
 - L3 review sends Telegram summary BEFORE updating state counter (state error was silently killing send in daemon thread)
 - macOS scripts: no `timeout` command (use background+kill), no `set -e` (kills EXIT_CODE logging), `claude` needs explicit PATH export
@@ -143,7 +152,7 @@
 - MINOR: new features, significant improvements (e.g., DefenseManager, signal pipeline)
 - PATCH: bug fixes, small tweaks (e.g., fix -2022 handling, fix timeout)
 - Tag + GitHub release for every MINOR/MAJOR bump; PATCH optional
-- Current: v1.5.7 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
+- Current: v1.6.0 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
 
 ## Architecture
 - 7-layer async trading system for Binance USDT-M Futures
@@ -151,6 +160,9 @@
 - Watchdog spec: `docs/superpowers/specs/2026-03-16-watchdog-daily-review-design.md`
 - Audit plan: `docs/superpowers/plans/2026-03-17-system-audit-fixes.md`
 - All source under ``
+- WebSocket data: `data/ws_manager.py` — real-time aggTrade, forceOrder, depth streams
+- User Data Stream: `data/user_data_stream.py` — account/order updates via WebSocket
+- Unix IPC: `ipc/socket_ipc.py` — watchdog↔bot communication via /tmp/crypto_beast_ipc.sock
 
 ## Code Patterns
 - Strategies: `BaseStrategy.generate(klines, symbol, regime) -> list[TradeSignal]`

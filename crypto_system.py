@@ -802,6 +802,9 @@ class TradingBot:
                 level="warning" if trade["reason"] == "STOP_LOSS" else "info",
             )
 
+        # Process any queued SL updates (breakeven moves)
+        await m["position_manager"].process_pending_sl_updates()
+
         # 8-10: Preparation for signal generation
         _skip_new_trades = not system_healthy
 
@@ -1318,6 +1321,12 @@ class TradingBot:
                     (datetime.now(timezone.utc).isoformat(), snap_equity))
             except Exception:
                 pass
+
+        # Close persistent aiohttp session
+        try:
+            await m["executor"].close()
+        except Exception as e:
+            logger.error(f"Failed to close executor session: {e}")
 
         # Close async exchange
         if self.exchange:
