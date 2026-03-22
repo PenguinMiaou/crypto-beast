@@ -68,6 +68,8 @@
 - In hedge mode, SELL with positionSide=LONG on empty position = -2022 (not -2019)
 - `executor.close()` must be called on shutdown (persistent aiohttp session)
 - `get_positions_and_account()` returns (positions, equity, available, wallet_balance) in single API call
+- PnL 计算: `(entry - exit) * quantity`，**不乘 leverage**（leverage 只影响保证金，不影响 PnL）
+- `profit_pct`（leveraged %）才乘 leverage：`(price_change / entry) * leverage`（用于利润保护、breakeven 等百分比判断）
 
 ## Reconciliation
 - On startup: `reconcile_with_exchange()` syncs DB with Binance
@@ -77,6 +79,7 @@
 - Equity calculation: use `fapiPrivateV2GetAccount` → `totalMarginBalance` (= wallet + unrealized PnL, matches Binance web UI)
 - Do NOT calculate equity from DB (starting_capital + closed_pnl - fees) — it drifts due to PnL reconciliation gaps
 - Dashboard, Telegram /balance, and bot internal equity all read from same Binance API → always consistent
+- reconciled 交易有幸存者偏差（重启时存活的仓位倾向盈利），评估策略真实表现时应排除
 
 ## Telegram Bot (via Watchdog)
 - ALL commands now handled by `watchdog_commands.py` (not bot's TelegramBot)
@@ -162,6 +165,11 @@
 - `close_trade_live()` recalculates PnL from actual fill price (was using estimated current_price)
 - Circuit breaker: 75% of peak wallet (was 85%)
 - AdaptiveRisk starts in grace period on boot (0.5x scale, avoids immediate cooldown from historical data)
+- `get_kelly_fraction()`: 必须同时检查 `not wins`（全败→0.0）和 `not losses`（全胜→0.1），否则 division by zero
+- AdaptiveRisk 冷却后需 grace period（相同时长，0.5x），否则低胜率导致无限冷却循环
+- 负 Kelly 策略不做 probation 交易（数学上确定亏损），paper-track only
+- 手续费是首要瓶颈（占毛利 35-67%），优先级：降费 > 减频 > 策略优化
+- 50 笔交易无法证明策略有效（p-value=0.38），需 200+ 笔才有统计显著性
 
 ## Versioning
 - Semantic versioning: vMAJOR.MINOR.PATCH (e.g., v1.1.0)
