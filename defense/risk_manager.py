@@ -1,9 +1,12 @@
 # defense/risk_manager.py
-from typing import Optional
+import time
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional
 
 from loguru import logger
 
 from config import Config
+from core.database import Database
 from core.models import (
     Direction,
     OrderType,
@@ -30,9 +33,112 @@ MIN_NOTIONAL = {
 DEFAULT_MIN_NOTIONAL = 20
 
 
+class AdaptiveRiskState:
+    """Tracks recent trade performance and returns a position-size scale factor (0.0–1.3)."""
+
+    def __init__(self, db: Optional[Database], lookback: int = 10, cooldown_hours: int = 2):
+        self._db = db
+        self._lookback = lookback
+        self._cooldown_hours = cooldown_hours
+        self._cooldown_until: Optional[datetime] = None
+        self._cache_scale: Optional[float] = None
+        self._cache_ts: float = 0.0
+        self._cache_ttl: float = 60.0  # seconds
+
+    def get_scale_factor(self) -> float:
+        """Return a multiplier (0.0–1.3) to apply to position size."""
+        now_ts = time.monotonic()
+        if self._cache_scale is not None and (now_ts - self._cache_ts) < self._cache_ttl:
+            return self._cache_scale
+
+        scale = self._compute_scale()
+        self._cache_scale = scale
+        self._cache_ts = now_ts
+        return scale
+
+    def _compute_scale(self) -> float:
+        # Handle active cooldown
+        if self._cooldown_until is not None:
+            now = datetime.now(timezone.utc)
+            if now < self._cooldown_until:
+                return 0.0
+            else:
+                # Cooldown expired — return reduced scale and clear
+                logger.info("AdaptiveRisk: cooldown expired, resuming at 0.5 scale")
+                self._cooldown_until = None
+                return 0.5
+
+        if self._db is None:
+            return 1.0
+
+        try:
+            cursor = self._db.execute(
+                "SELECT pnl FROM trades WHERE status='CLOSED' AND pnl IS NOT NULL"
+                " ORDER BY exit_time DESC LIMIT ?",
+                (self._lookback,),
+            )
+            rows = cursor.fetchall()
+        except Exception as exc:
+            logger.warning(f"AdaptiveRisk: DB query failed: {exc}")
+            return 1.0
+
+        if not rows:
+            return 1.0
+
+        pnls: List[float] = [row[0] for row in rows]
+
+        # Count consecutive losses from most recent
+        consecutive_losses = 0
+        for pnl in pnls:
+            if pnl < 0:
+                consecutive_losses += 1
+            else:
+                break
+
+        wins = sum(1 for p in pnls if p > 0)
+        win_rate = wins / len(pnls) * 100  # percent
+
+        # Win-rate below 30% → enter cooldown, block trading
+        if win_rate < 30.0:
+            self._cooldown_until = datetime.now(timezone.utc) + timedelta(hours=self._cooldown_hours)
+            logger.warning(
+                f"AdaptiveRisk: win_rate={win_rate:.0f}% < 30% — entering {self._cooldown_hours}h cooldown"
+            )
+            return 0.0
+
+        # Consecutive-loss scaling
+        if consecutive_losses >= 5:
+            logger.info(f"AdaptiveRisk: {consecutive_losses} consecutive losses → 0.25 scale")
+            return 0.25
+        if consecutive_losses >= 3:
+            logger.info(f"AdaptiveRisk: {consecutive_losses} consecutive losses → 0.50 scale")
+            return 0.50
+
+        # Winning streak bonus
+        if win_rate > 70.0 and consecutive_losses == 0:
+            return 1.3
+
+        return 1.0
+
+    def get_min_confidence_boost(self) -> float:
+        """Return extra confidence threshold when performance is poor."""
+        scale = self.get_scale_factor()
+        if scale <= 0.25:
+            return 0.15
+        if scale <= 0.50:
+            return 0.10
+        return 0.0
+
+
 class RiskManager:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, db: Optional[Database] = None,
+                 compound_engine: Optional[object] = None):
         self.config = config
+        self._adaptive = (
+            AdaptiveRiskState(db, config.adaptive_lookback, config.adaptive_cooldown_hours)
+            if db else None
+        )
+        self._compound = compound_engine
 
     def validate(self, signal: TradeSignal, portfolio: Portfolio,
                  min_confidence: float = 0.3) -> Optional[ValidatedOrder]:
@@ -40,6 +146,17 @@ class RiskManager:
         if signal.confidence < min_confidence:
             logger.debug(f"Signal rejected: confidence {signal.confidence} < {min_confidence}")
             return None
+
+        # Adaptive risk check
+        if self._adaptive:
+            adaptive_scale = self._adaptive.get_scale_factor()
+            if adaptive_scale <= 0.0:
+                logger.debug("Signal rejected: adaptive cooldown (win_rate < 30%)")
+                return None
+            conf_boost = self._adaptive.get_min_confidence_boost()
+            if signal.confidence < (min_confidence + conf_boost):
+                logger.debug(f"Signal rejected: adaptive min_confidence {min_confidence + conf_boost:.2f}")
+                return None
 
         # Check max concurrent positions
         if len(portfolio.positions) >= self.config.max_concurrent_positions:
@@ -157,6 +274,10 @@ class RiskManager:
             return None
 
         risk_amount = quantity * risk_distance
+
+        # Apply adaptive risk scaling to final quantity
+        if self._adaptive:
+            quantity = quantity * self._adaptive.get_scale_factor()
 
         return ValidatedOrder(
             signal=signal,

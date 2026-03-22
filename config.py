@@ -63,6 +63,12 @@ class Config:
     profit_protect_drawback_pct: float = 0.35      # Close if 35% of peak profit given back
     breakeven_sl_threshold: float = 0.05           # Move SL to breakeven when leveraged PnL > 5%
 
+    # Adaptive risk
+    adaptive_lookback: int = 10
+    adaptive_cooldown_hours: int = 2
+    regime_transition_cooldown: int = 6
+    ml_regime_model_path: str = "models/regime_model.pkl"
+
     # Position timeout
     position_timeout_hours: int = 48
     timeout_pnl_min: float = -0.01

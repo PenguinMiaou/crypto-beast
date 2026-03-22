@@ -1,5 +1,6 @@
 # tests/defense/test_risk_manager.py
 import pytest
+from datetime import datetime, timezone
 
 from core.models import (
     Direction,
@@ -189,3 +190,99 @@ class TestRiskManager:
         )
         result = risk_manager.validate(sol_signal, portfolio)
         assert result is None, "Should reject: 3rd correlated asset same direction"
+
+
+def _insert_trades(db, pnls):
+    """Helper: insert closed trades with given pnl list (most recent first = last inserted)."""
+    now = datetime.now(timezone.utc)
+    for i, pnl in enumerate(reversed(pnls)):  # oldest first so ORDER BY exit_time DESC gives correct order
+        db.execute(
+            "INSERT INTO trades (symbol, side, entry_price, exit_price, quantity, leverage, "
+            "strategy, entry_time, exit_time, pnl, fees, status) VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "BTCUSDT", "BUY", 65000.0, 65100.0, 0.001, 10, "test",
+                f"2026-01-01T{i:02d}:00:00+00:00",
+                f"2026-01-01T{i:02d}:30:00+00:00",
+                pnl, 0.1, "CLOSED",
+            ),
+        )
+
+
+class TestAdaptiveRiskState:
+    def _make_portfolio(self):
+        return Portfolio(
+            equity=500.0, available_balance=500.0, positions=[],
+            peak_equity=500.0, locked_capital=0.0, daily_pnl=0.0,
+            total_fees_today=0.0, drawdown_pct=0.0,
+        )
+
+    def _make_signal(self):
+        return TradeSignal(
+            symbol="BTCUSDT", direction=Direction.LONG, confidence=0.85,
+            entry_price=65000.0, stop_loss=64000.0, take_profit=67000.0,
+            strategy="trend_follower", regime=MarketRegime.TRENDING_UP,
+            timeframe_score=8,
+        )
+
+    def test_adaptive_consecutive_loss_scales_down(self, db):
+        """4 consecutive losses should yield scale <= 0.50."""
+        from defense.risk_manager import AdaptiveRiskState
+        from config import Config
+
+        # Insert 4 consecutive losing trades (most recent first in list)
+        _insert_trades(db, [-1.0, -1.0, -1.0, -1.0, 5.0])
+        state = AdaptiveRiskState(db, lookback=10, cooldown_hours=2)
+        scale = state.get_scale_factor()
+        assert scale <= 0.50, f"Expected scale <= 0.50 after 4 consecutive losses, got {scale}"
+
+    def test_adaptive_cooldown_on_low_winrate(self, db):
+        """2 wins, 8 losses (20% win-rate) should trigger cooldown and return 0.0."""
+        from defense.risk_manager import AdaptiveRiskState
+        from config import Config
+
+        pnls = [1.0, 1.0] + [-1.0] * 8  # 20% win rate
+        _insert_trades(db, pnls)
+        state = AdaptiveRiskState(db, lookback=10, cooldown_hours=2)
+        scale = state.get_scale_factor()
+        assert scale == 0.0, f"Expected scale == 0.0 for 20% win-rate, got {scale}"
+
+    def test_adaptive_normal_when_winning(self, db):
+        """5 winning trades should yield scale >= 1.0."""
+        from defense.risk_manager import AdaptiveRiskState
+        from config import Config
+
+        _insert_trades(db, [2.0, 1.5, 3.0, 1.0, 2.5])
+        state = AdaptiveRiskState(db, lookback=10, cooldown_hours=2)
+        scale = state.get_scale_factor()
+        assert scale >= 1.0, f"Expected scale >= 1.0 for all-wins, got {scale}"
+
+    def test_adaptive_integrated_in_risk_manager(self, db):
+        """RiskManager with db should apply adaptive scale to quantity."""
+        from defense.risk_manager import AdaptiveRiskState, RiskManager
+        from config import Config
+
+        config = Config()
+        # Most recent 3 are losses (consecutive), 4 wins before → 4/7 = 57% win_rate (>=30%)
+        # _insert_trades reverses the list so ORDER BY exit_time DESC returns the original order.
+        # Pass losses first (index 0) so they become most recent in DB.
+        _insert_trades(db, [-1.0, -1.0, -1.0, 5.0, 5.0, 5.0, 5.0])
+        rm_adaptive = RiskManager(config, db)
+        rm_plain = RiskManager(config)
+
+        # Verify scale is indeed 0.50 (3 consecutive losses, win_rate=57%)
+        assert rm_adaptive._adaptive is not None
+        scale = rm_adaptive._adaptive.get_scale_factor()
+        assert scale == 0.50, f"Expected 0.50 scale, got {scale}"
+
+        portfolio = self._make_portfolio()
+        # Use separate signal objects to avoid mutation
+        signal_adaptive = self._make_signal()
+        signal_plain = self._make_signal()
+        order_adaptive = rm_adaptive.validate(signal_adaptive, portfolio)
+        order_plain = rm_plain.validate(signal_plain, portfolio)
+
+        assert order_adaptive is not None
+        assert order_plain is not None
+        # Adaptive (scale=0.50) should produce smaller quantity than plain (no scaling)
+        assert order_adaptive.quantity < order_plain.quantity

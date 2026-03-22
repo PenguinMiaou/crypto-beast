@@ -214,7 +214,7 @@ class TradingBot:
             # Defense — lower confidence threshold for paper testing
             if self.paper_mode:
                 self.config.max_risk_per_trade = 0.02  # 2% risk per trade
-            risk_manager = RiskManager(self.config)
+            risk_manager = RiskManager(self.config, db)
             anti_trap = AntiTrap()
             fee_optimizer = FeeOptimizer(self.config)
             defense = DefenseManager(self.config)
