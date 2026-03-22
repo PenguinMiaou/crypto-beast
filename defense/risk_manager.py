@@ -98,8 +98,8 @@ class AdaptiveRiskState:
         wins = sum(1 for p in pnls if p > 0)
         win_rate = wins / len(pnls) * 100  # percent
 
-        # Win-rate below 30% → enter cooldown, block trading
-        if win_rate < 30.0:
+        # Win-rate at or below 30% → enter cooldown, block trading
+        if win_rate <= 30.0:
             self._cooldown_until = datetime.now(timezone.utc) + timedelta(hours=self._cooldown_hours)
             logger.warning(
                 f"AdaptiveRisk: win_rate={win_rate:.0f}% < 30% — entering {self._cooldown_hours}h cooldown"
@@ -161,7 +161,7 @@ class RiskManager:
         # Kelly criterion: reject strategies with negative expected value
         if self._compound:
             strategy_kelly = self._compound.get_kelly_fraction(signal.strategy)
-            if strategy_kelly <= 0.01:
+            if strategy_kelly <= 0.0:
                 logger.debug(f"Signal rejected: Kelly too low ({strategy_kelly:.4f}) for {signal.strategy}")
                 return None
 

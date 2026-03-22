@@ -21,7 +21,7 @@ class Config:
     max_concurrent_positions: int = 3
     max_daily_loss: float = 0.10
     max_total_drawdown: float = 0.30
-    circuit_breaker_pct: float = 0.85  # Emergency close if wallet < 85% of peak wallet
+    circuit_breaker_pct: float = 0.75  # Emergency close if wallet < 75% of peak wallet
     max_directional_leverage: float = 15.0
     max_correlated_same_dir: int = 2
     correlation_penalty: float = 0.6

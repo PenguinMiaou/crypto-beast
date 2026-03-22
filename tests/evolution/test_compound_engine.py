@@ -48,10 +48,10 @@ class TestKellyFraction:
         expected = (1 / 3) * 0.5
         assert abs(fraction - expected) < 0.001
 
-    def test_fewer_than_10_trades_returns_default(self, engine):
-        """Less than 10 trades should return conservative default 0.02."""
-        # Insert only 5 trades
-        for i in range(5):
+    def test_fewer_than_5_trades_returns_default(self, engine):
+        """Less than 5 trades should return conservative default 0.02."""
+        # Insert only 3 trades
+        for i in range(3):
             engine.db.execute(
                 "INSERT INTO trades (symbol, side, strategy, entry_price, exit_price, quantity, leverage, pnl, fees, status, entry_time, exit_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 ("BTCUSDT", "LONG", "trend_follower", 65000, 65100, 0.01, 1, 1.0, 0.05, "CLOSED", "2026-01-01", "2026-01-01")

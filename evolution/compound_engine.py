@@ -19,8 +19,8 @@ class CompoundEngine:
             "SELECT pnl FROM trades WHERE strategy = ? AND status = 'CLOSED' ORDER BY exit_time DESC LIMIT 100",
             (strategy,)
         ).fetchall()
-        if len(rows) < 10:
-            return 0.02  # Default conservative fraction
+        if len(rows) < 5:
+            return 0.02  # Default conservative fraction (need at least 5 trades)
         pnls = [r[0] for r in rows if r[0] is not None]
         if not pnls:
             return 0.02
@@ -31,7 +31,11 @@ class CompoundEngine:
         p = len(wins) / len(pnls)
         b = (sum(wins) / len(wins)) / (sum(losses) / len(losses))
         kelly = (b * p - (1 - p)) / b
-        return max(0.01, min(0.2, kelly * self.config.kelly_fraction))
+        # If Kelly is negative, return 0 (strategy has negative expected value)
+        half_kelly = kelly * self.config.kelly_fraction
+        if half_kelly <= 0:
+            return 0.0
+        return min(0.2, half_kelly)
 
     def update_position_sizing(self, portfolio: Portfolio) -> PositionSizing:
         """Update position sizing based on current portfolio."""
