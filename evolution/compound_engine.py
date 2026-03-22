@@ -26,6 +26,8 @@ class CompoundEngine:
             return 0.02
         wins = [p for p in pnls if p > 0]
         losses = [abs(p) for p in pnls if p < 0]
+        if not wins:
+            return 0.0  # All losses → negative expected value
         if not losses:
             return 0.1
         p = len(wins) / len(pnls)
