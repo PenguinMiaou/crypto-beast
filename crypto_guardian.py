@@ -552,6 +552,23 @@ class WatchdogDaemon:
                 self._last_weekly_review = week_str
                 Thread(target=self.run_review, args=("weekly",), daemon=True).start()
 
+                # ML model retrain (weekly)
+                import subprocess as _subprocess
+                try:
+                    _result = _subprocess.run(
+                        [sys.executable, "scripts/train_regime.py"],
+                        capture_output=True, text=True, timeout=300,
+                        cwd=str(Path(__file__).parent)
+                    )
+                    if _result.returncode != 0:
+                        logger.error(f"Regime model training failed: {_result.stderr[:200]}")
+                    else:
+                        logger.info("Regime model retrained successfully")
+                except _subprocess.TimeoutExpired:
+                    logger.warning("Regime model training timed out (5min)")
+                except Exception as e:
+                    logger.warning(f"Regime model training error: {e}")
+
         # Monthly: 1st of month 01:00 UTC
         if now.day == 1 and now.hour == 1 and 0 <= now.minute <= 5:
             month_str = now.strftime("%Y-%m")
