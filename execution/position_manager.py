@@ -171,10 +171,11 @@ class PositionManager:
 
             if reason:
                 # Calculate PnL
+                # Binance Futures PnL = (entry-exit) * qty; leverage only affects margin, not PnL
                 if side == "LONG":
-                    pnl = (exit_price - entry_price) * quantity * leverage
+                    pnl = (exit_price - entry_price) * quantity
                 else:
-                    pnl = (entry_price - exit_price) * quantity * leverage
+                    pnl = (entry_price - exit_price) * quantity
 
                 fees = exit_price * quantity * 0.0004  # taker fee
                 net_pnl = pnl - fees
@@ -240,10 +241,11 @@ class PositionManager:
                 entry = trade["entry_price"]
                 qty = trade["quantity"]
                 lev = trade["leverage"]
+                # Binance Futures PnL = (entry-exit) * qty; leverage only affects margin
                 if trade["side"] == "LONG":
-                    actual_pnl = (fill - entry) * qty * lev - result.fees_paid
+                    actual_pnl = (fill - entry) * qty - result.fees_paid
                 else:
-                    actual_pnl = (entry - fill) * qty * lev - result.fees_paid
+                    actual_pnl = (entry - fill) * qty - result.fees_paid
                 actual_pnl = round(actual_pnl, 4)
 
                 self.db.execute(

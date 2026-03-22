@@ -82,25 +82,26 @@ class TestCheckPositions:
         assert len(result) == 0
 
     def test_pnl_calculation_long_sl(self, db):
-        # LONG entry=65000 exit=64000 qty=0.01 lev=5
-        # pnl = (64000-65000)*0.01*5 = -50
+        # LONG entry=65000 exit=64000 qty=0.01
+        # Binance Futures: PnL = (exit-entry)*qty (leverage NOT in PnL, only margin)
+        # pnl = (64000-65000)*0.01 = -10
         # fees = 64000*0.01*0.0004 = 0.256
-        # net = -50 - 0.256 = -50.256
+        # net = -10 - 0.256 = -10.256
         _insert_trade(db, stop_loss=64000.0, take_profit=67000.0)
         pm = PositionManager(db, lambda s: 63000.0, _make_config())
         result = pm.check_positions()
-        assert result[0]["pnl"] == round(-50.0 - 64000.0 * 0.01 * 0.0004, 4)
+        assert result[0]["pnl"] == round(-10.0 - 64000.0 * 0.01 * 0.0004, 4)
 
     def test_pnl_calculation_short_tp(self, db):
-        # SHORT entry=65000 exit=63000 qty=0.01 lev=5
-        # pnl = (65000-63000)*0.01*5 = 100
+        # SHORT entry=65000 exit=63000 qty=0.01
+        # pnl = (65000-63000)*0.01 = 20
         # fees = 63000*0.01*0.0004 = 0.252
-        # net = 100 - 0.252 = 99.748
+        # net = 20 - 0.252 = 19.748
         _insert_trade(db, side="SHORT", entry_price=65000.0,
                       stop_loss=66000.0, take_profit=63000.0)
         pm = PositionManager(db, lambda s: 62000.0, _make_config())
         result = pm.check_positions()
-        assert result[0]["pnl"] == round(100.0 - 63000.0 * 0.01 * 0.0004, 4)
+        assert result[0]["pnl"] == round(20.0 - 63000.0 * 0.01 * 0.0004, 4)
 
 
 class TestCloseTrade:
