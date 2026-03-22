@@ -41,6 +41,7 @@ class AdaptiveRiskState:
         self._lookback = lookback
         self._cooldown_hours = cooldown_hours
         self._cooldown_until: Optional[datetime] = None
+        self._grace_until: Optional[datetime] = None
         self._cache_scale: Optional[float] = None
         self._cache_ts: float = 0.0
         self._cache_ttl: float = 60.0  # seconds
@@ -63,10 +64,21 @@ class AdaptiveRiskState:
             if now < self._cooldown_until:
                 return 0.0
             else:
-                # Cooldown expired — return reduced scale and clear
+                # Cooldown expired — resume at 0.5 scale for the NEXT cooldown period
+                # This prevents re-triggering immediately when historical win_rate is still low
                 logger.info("AdaptiveRisk: cooldown expired, resuming at 0.5 scale")
                 self._cooldown_until = None
+                # Set a grace period: don't re-evaluate win_rate for another cooldown period
+                self._grace_until = now + timedelta(hours=self._cooldown_hours)
                 return 0.5
+
+        # Grace period after cooldown: trade at reduced scale without re-checking win_rate
+        if hasattr(self, '_grace_until') and self._grace_until is not None:
+            now = datetime.now(timezone.utc)
+            if now < self._grace_until:
+                return 0.5  # Reduced scale during grace
+            else:
+                self._grace_until = None  # Grace expired, resume normal evaluation
 
         if self._db is None:
             return 1.0
@@ -102,7 +114,7 @@ class AdaptiveRiskState:
         if win_rate <= 30.0:
             self._cooldown_until = datetime.now(timezone.utc) + timedelta(hours=self._cooldown_hours)
             logger.warning(
-                f"AdaptiveRisk: win_rate={win_rate:.0f}% < 30% — entering {self._cooldown_hours}h cooldown"
+                f"AdaptiveRisk: win_rate={win_rate:.0f}% <= 30% — entering {self._cooldown_hours}h cooldown"
             )
             return 0.0
 
