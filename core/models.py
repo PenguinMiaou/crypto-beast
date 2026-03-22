@@ -244,6 +244,8 @@ class WalkForwardResult:
     out_of_sample_sharpe: float
     best_params: dict
     is_valid: bool  # True if OOS sharpe > 0
+    num_folds: int = 1  # Number of rolling folds computed
+    efficiency_ratio: float = 0.0  # OOS Sharpe / IS Sharpe (1.0 = perfect transfer)
 
 @dataclass
 class MonteCarloResult:

@@ -164,7 +164,11 @@ class BacktestLab:
     def run_walk_forward(self, strategy, data: pd.DataFrame, symbol: str = "BTCUSDT",
                          train_days: int = 30, test_days: int = 7,
                          starting_capital: float = 100.0) -> WalkForwardResult:
-        """Run walk-forward analysis: train on window, test on next window."""
+        """Run rolling walk-forward analysis: train on window, test on next window.
+
+        Slides forward by test_days each fold.  Aggregates IS/OOS Sharpe across
+        all folds and computes an efficiency ratio (OOS / IS).
+        """
         # Each day ~ 288 five-minute candles
         candles_per_day = 288
         train_size = train_days * candles_per_day
@@ -173,23 +177,44 @@ class BacktestLab:
         if len(data) < train_size + test_size:
             return WalkForwardResult(
                 in_sample_sharpe=0.0, out_of_sample_sharpe=0.0,
-                best_params={}, is_valid=False)
+                best_params={}, is_valid=False, num_folds=0,
+                efficiency_ratio=0.0)
 
-        # Split data
-        train_data = data.iloc[:train_size]
-        test_data = data.iloc[train_size:train_size + test_size]
+        # Build rolling folds: slide start by test_size each fold
+        is_sharpes: List[float] = []
+        oos_sharpes: List[float] = []
 
-        # Run in-sample backtest
-        is_result = self.run_backtest(strategy, train_data, symbol, starting_capital)
+        start = 0
+        while start + train_size + test_size <= len(data):
+            train_data = data.iloc[start: start + train_size]
+            test_data = data.iloc[start + train_size: start + train_size + test_size]
 
-        # Run out-of-sample backtest
-        oos_result = self.run_backtest(strategy, test_data, symbol, starting_capital)
+            is_result = self.run_backtest(strategy, train_data, symbol, starting_capital)
+            oos_result = self.run_backtest(strategy, test_data, symbol, starting_capital)
+
+            is_sharpes.append(is_result.sharpe_ratio)
+            oos_sharpes.append(oos_result.sharpe_ratio)
+
+            start += test_size  # slide by one test window
+
+        num_folds = len(is_sharpes)
+        if num_folds == 0:
+            return WalkForwardResult(
+                in_sample_sharpe=0.0, out_of_sample_sharpe=0.0,
+                best_params={}, is_valid=False, num_folds=0,
+                efficiency_ratio=0.0)
+
+        avg_is = float(np.mean(is_sharpes))
+        avg_oos = float(np.mean(oos_sharpes))
+        efficiency_ratio = round(avg_oos / avg_is, 4) if avg_is != 0 else 0.0
 
         return WalkForwardResult(
-            in_sample_sharpe=is_result.sharpe_ratio,
-            out_of_sample_sharpe=oos_result.sharpe_ratio,
+            in_sample_sharpe=round(avg_is, 4),
+            out_of_sample_sharpe=round(avg_oos, 4),
             best_params={},  # Params from the strategy used
-            is_valid=oos_result.sharpe_ratio > 0,
+            is_valid=avg_oos > 0,
+            num_folds=num_folds,
+            efficiency_ratio=efficiency_ratio,
         )
 
     def run_monte_carlo(self, trades: List[dict], starting_capital: float = 100.0,
