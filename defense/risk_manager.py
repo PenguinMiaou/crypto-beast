@@ -41,7 +41,9 @@ class AdaptiveRiskState:
         self._lookback = lookback
         self._cooldown_hours = cooldown_hours
         self._cooldown_until: Optional[datetime] = None
-        self._grace_until: Optional[datetime] = None
+        # Start in grace period on boot — allows trading at 0.5x immediately
+        # instead of triggering cooldown from historical low win_rate
+        self._grace_until: Optional[datetime] = datetime.now(timezone.utc) + timedelta(hours=cooldown_hours)
         self._cache_scale: Optional[float] = None
         self._cache_ts: float = 0.0
         self._cache_ttl: float = 60.0  # seconds

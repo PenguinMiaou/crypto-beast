@@ -9,7 +9,7 @@ class TestConfig:
 
         cfg = Config()
         assert cfg.starting_capital == 100.0
-        assert cfg.max_leverage == 7
+        assert cfg.max_leverage == 10
         assert cfg.max_risk_per_trade == 0.03
         assert cfg.main_loop_interval == 5
 

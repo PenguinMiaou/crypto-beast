@@ -12,8 +12,8 @@ class Config:
     starting_capital: float = 100.0
 
     # Leverage
-    max_leverage: int = 7
-    leverage_high_confidence: int = 7
+    max_leverage: int = 10
+    leverage_high_confidence: int = 10
     leverage_medium_confidence: int = 5
 
     # Risk

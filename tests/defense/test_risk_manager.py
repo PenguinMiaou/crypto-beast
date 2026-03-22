@@ -93,7 +93,7 @@ class TestRiskManager:
             strategy="test", regime=MarketRegime.TRENDING_UP, timeframe_score=8,
         )
         order = rm.validate(high_conf, empty_portfolio)
-        assert order.leverage == 7
+        assert order.leverage == 10
 
         mid_conf = TradeSignal(
             symbol="BTCUSDT", direction=Direction.LONG, confidence=0.6,
@@ -261,6 +261,7 @@ class TestAdaptiveRiskState:
         # Insert 4 consecutive losing trades (most recent first in list)
         _insert_trades(db, [-1.0, -1.0, -1.0, -1.0, 5.0])
         state = AdaptiveRiskState(db, lookback=10, cooldown_hours=2)
+        state._grace_until = None  # Clear boot grace for testing
         scale = state.get_scale_factor()
         assert scale <= 0.50, f"Expected scale <= 0.50 after 4 consecutive losses, got {scale}"
 
@@ -272,6 +273,7 @@ class TestAdaptiveRiskState:
         pnls = [1.0, 1.0] + [-1.0] * 8  # 20% win rate
         _insert_trades(db, pnls)
         state = AdaptiveRiskState(db, lookback=10, cooldown_hours=2)
+        state._grace_until = None  # Clear boot grace for testing
         scale = state.get_scale_factor()
         assert scale == 0.0, f"Expected scale == 0.0 for 20% win-rate, got {scale}"
 
@@ -282,6 +284,7 @@ class TestAdaptiveRiskState:
 
         _insert_trades(db, [2.0, 1.5, 3.0, 1.0, 2.5])
         state = AdaptiveRiskState(db, lookback=10, cooldown_hours=2)
+        state._grace_until = None  # Clear boot grace for testing
         scale = state.get_scale_factor()
         assert scale >= 1.0, f"Expected scale >= 1.0 for all-wins, got {scale}"
 

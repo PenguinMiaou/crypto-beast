@@ -146,14 +146,22 @@
 - Reconciliation INSERT must include stop_loss/take_profit columns (default 0)
 - After completing work: always update CLAUDE.md, 策略详解.md, and git tag+release
 - Adaptive risk: consecutive loss scaling (3→50%, 5→25%), win_rate<=30% → 2h cooldown + 2h grace period (prevents infinite re-trigger)
-- Kelly Criterion connected: strategy-level Kelly<=0 → reject signal; probation trade every 2h at min position for blocked strategies
+- Kelly Criterion connected: strategy-level Kelly<=0 → reject signal (no probation, paper-track only)
 - Kelly min trades threshold: 5 (was 10); negative Kelly returns 0.0 (was clamped to 0.01)
 - Regime-aware strategy weights: trending favors trend_follower/momentum, ranging favors enhanced_bb_rsi/mean_reversion
-- MarketRegime.TRANSITIONING: ADX rapid drop or RSI divergence triggers conservative mode (max 5x leverage, min 0.5 confidence)
+- MarketRegime.TRANSITIONING: ADX rapid drop (>8pts/3bars) or RSI divergence (price>0.5% + RSI>5pts) triggers conservative mode
 - New strategies: ichimoku_cloud (Ichimoku Cloud TK-cross + cloud filter), enhanced_bb_rsi (BB+RSI+MACD ranging)
+- funding_rate_arb integrated into StrategyEngine (was standalone dead code)
+- Scalper strategy disabled (20% win rate, net loss, noise-driven)
+- Ensemble voting: ≥3 strategies agree → confidence +0.10, ≥2 → +0.05, solo → -0.05
+- LIMIT+IOC entry for confidence < 0.6 (maker fee 0.02% vs taker 0.04%)
+- Entry randomization: 30% chance of 5-15s delay + ±10% size jitter (mixed strategy)
+- Fast stop-loss: positions held <30min with >1% leveraged loss auto-closed
+- min_confidence raised to 0.4 (was 0.3); MAX_MULTIPLIER 2.5 (was 3.5)
 - Profit lock connected to RiskManager: equity - locked_capital as position sizing base
-- `close_trade_live()` recalculates PnL from actual fill price (was using estimated current_price, causing Telegram/Dashboard PnL mismatch)
-- Circuit breaker: 75% of peak wallet (was 85%, too tight for $200 account)
+- `close_trade_live()` recalculates PnL from actual fill price (was using estimated current_price)
+- Circuit breaker: 75% of peak wallet (was 85%)
+- AdaptiveRisk starts in grace period on boot (0.5x scale, avoids immediate cooldown from historical data)
 
 ## Versioning
 - Semantic versioning: vMAJOR.MINOR.PATCH (e.g., v1.1.0)
@@ -161,7 +169,7 @@
 - MINOR: new features, significant improvements (e.g., DefenseManager, signal pipeline)
 - PATCH: bug fixes, small tweaks (e.g., fix -2022 handling, fix timeout)
 - Tag + GitHub release for every MINOR/MAJOR bump; PATCH optional
-- Current: v1.7.1 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
+- Current: v1.7.2 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
 
 ## Architecture
 - 7-layer async trading system for Binance USDT-M Futures
