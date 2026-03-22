@@ -170,6 +170,14 @@
 - 负 Kelly 策略不做 probation 交易（数学上确定亏损），paper-track only
 - 手续费是首要瓶颈（占毛利 35-67%），优先级：降费 > 减频 > 策略优化
 - 50 笔交易无法证明策略有效（p-value=0.38），需 200+ 笔才有统计显著性
+- Flip 失败必须 abort 整个信号（否则旧仓未平+新仓已开=双向持仓）
+- min_profit_pct 和 breakeven fee_adj 不除以 leverage（手续费按 notional 收，与杠杆无关）
+- adaptive_scale 应用后必须重新检查 min_notional（缩仓后可能低于最小名义值）
+- MARKET 单 filled=0 时查询订单状态，不假设已成交
+- 随机延迟后检查价格漂移 >0.5% 则放弃信号
+- 动态 altcoin 从 exchange.market() 获取 qty 精度（硬编码表只覆盖 10 个 symbol）
+- Ensemble 投票只 boost 共识，不惩罚单策略信号（好信号不该被错杀）
+- AltcoinRadar: 每 4h 扫描，$100M 最低交易量，kline_count=0 时跳过 maturity 检查
 
 ## Versioning
 - Semantic versioning: vMAJOR.MINOR.PATCH (e.g., v1.1.0)
@@ -177,7 +185,7 @@
 - MINOR: new features, significant improvements (e.g., DefenseManager, signal pipeline)
 - PATCH: bug fixes, small tweaks (e.g., fix -2022 handling, fix timeout)
 - Tag + GitHub release for every MINOR/MAJOR bump; PATCH optional
-- Current: v1.7.2 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
+- Current: v1.7.3 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
 
 ## Architecture
 - 7-layer async trading system for Binance USDT-M Futures
