@@ -38,7 +38,13 @@ class CompoundEngine:
         self._update_locks(portfolio.equity)
         available = portfolio.equity - self._locked_capital
         fractions: Dict[str, float] = {}
-        for strategy in ["trend_follower", "mean_reversion", "momentum", "breakout", "scalper"]:
+        strategies = [r[0] for r in self.db.execute(
+            "SELECT DISTINCT strategy FROM trades WHERE status='CLOSED' AND strategy IS NOT NULL"
+        ).fetchall()]
+        if not strategies:
+            strategies = ["trend_follower", "mean_reversion", "momentum", "breakout",
+                          "scalper", "ichimoku_cloud", "enhanced_bb_rsi"]
+        for strategy in strategies:
             fractions[strategy] = self.get_kelly_fraction(strategy)
         return PositionSizing(
             available_capital=available,

@@ -158,6 +158,13 @@ class RiskManager:
                 logger.debug(f"Signal rejected: adaptive min_confidence {min_confidence + conf_boost:.2f}")
                 return None
 
+        # Kelly criterion: reject strategies with negative expected value
+        if self._compound:
+            strategy_kelly = self._compound.get_kelly_fraction(signal.strategy)
+            if strategy_kelly <= 0.01:
+                logger.debug(f"Signal rejected: Kelly too low ({strategy_kelly:.4f}) for {signal.strategy}")
+                return None
+
         # Check max concurrent positions
         if len(portfolio.positions) >= self.config.max_concurrent_positions:
             logger.debug("Signal rejected: max positions reached")
@@ -194,12 +201,14 @@ class RiskManager:
         else:
             leverage = max(3, self.config.leverage_medium_confidence // 2)
 
-        # Calculate available capital per position
+        # Calculate available capital per position (exclude profit-locked capital)
+        locked = self._compound.get_locked_capital() if self._compound else 0
+        effective_equity = max(portfolio.equity - locked, 0)
         used_margin = sum(
             pos.quantity * pos.entry_price / pos.leverage
             for pos in portfolio.positions
         )
-        available = portfolio.equity - used_margin
+        available = effective_equity - used_margin
 
         # Check minimum notional requirement for this symbol
         min_notional = MIN_NOTIONAL.get(signal.symbol, DEFAULT_MIN_NOTIONAL)
@@ -211,7 +220,7 @@ class RiskManager:
             return None
         max_per_position = available / remaining_slots
         capital_for_this = max(min_margin_needed * 1.05, max_per_position)  # 5% buffer above minimum
-        capital_for_this = min(capital_for_this, available * 0.95, portfolio.equity * 0.4)
+        capital_for_this = min(capital_for_this, available * 0.95, effective_equity * 0.4)
 
         if capital_for_this <= 0:
             logger.debug("Signal rejected: no available capital")

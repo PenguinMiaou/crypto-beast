@@ -192,6 +192,34 @@ class TestRiskManager:
         assert result is None, "Should reject: 3rd correlated asset same direction"
 
 
+def test_kelly_negative_rejects_signal(db):
+    """#2: strategy with negative Kelly should be rejected."""
+    from core.models import Direction, MarketRegime, Portfolio, TradeSignal
+    # Insert 10 trades for 'bad_strat': 2 wins, 8 losses
+    for i in range(10):
+        pnl = 0.5 if i < 2 else -1.0
+        db.execute(
+            "INSERT INTO trades (symbol, side, entry_price, quantity, leverage, "
+            "strategy, entry_time, exit_time, fees, status, pnl, stop_loss, take_profit) "
+            "VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?), datetime('now'), 0.01, 'CLOSED', ?, 0, 0)",
+            ("BTCUSDT", "LONG", 65000, 0.001, 5, "bad_strat", f"-{i+1} hours", pnl)
+        )
+    from config import Config
+    from evolution.compound_engine import CompoundEngine
+    from defense.risk_manager import RiskManager
+    config = Config()
+    compound = CompoundEngine(config, db)
+    rm = RiskManager(config, db, compound)
+    signal = TradeSignal(symbol="BTCUSDT", direction=Direction.LONG, confidence=0.8,
+                         entry_price=65000.0, stop_loss=64000.0, take_profit=67000.0,
+                         strategy="bad_strat", regime=MarketRegime.TRENDING_UP, timeframe_score=8)
+    portfolio = Portfolio(equity=100.0, available_balance=100.0, positions=[],
+                          peak_equity=100.0, locked_capital=0.0, daily_pnl=0.0,
+                          total_fees_today=0.0, drawdown_pct=0.0)
+    result = rm.validate(signal, portfolio)
+    assert result is None, "Signal should be rejected: Kelly negative for losing strategy"
+
+
 def _insert_trades(db, pnls):
     """Helper: insert closed trades with given pnl list (most recent first = last inserted)."""
     now = datetime.now(timezone.utc)

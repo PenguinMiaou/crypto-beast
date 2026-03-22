@@ -211,10 +211,15 @@ class TradingBot:
             })
             funding_rate_arb = FundingRateArb()
 
+            # Evolution (created early so RiskManager can use Kelly sizing)
+            compound_engine = CompoundEngine(self.config, self.db)
+            evolver = Evolver(self.config, self.db)
+            trade_reviewer = TradeReviewer(self.db)
+
             # Defense — lower confidence threshold for paper testing
             if self.paper_mode:
                 self.config.max_risk_per_trade = 0.02  # 2% risk per trade
-            risk_manager = RiskManager(self.config, db)
+            risk_manager = RiskManager(self.config, db, compound_engine)
             anti_trap = AntiTrap()
             fee_optimizer = FeeOptimizer(self.config)
             defense = DefenseManager(self.config)
@@ -245,11 +250,6 @@ class TradingBot:
                 config=self.config,
                 executor=executor if not self.paper_mode else None,
             )
-
-            # Evolution
-            compound_engine = CompoundEngine(self.config, self.db)
-            evolver = Evolver(self.config, self.db)
-            trade_reviewer = TradeReviewer(self.db)
 
             # Monitoring
             notifier = Notifier(
