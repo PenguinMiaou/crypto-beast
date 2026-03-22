@@ -145,12 +145,15 @@
 - Binance Futures ccxt ticker format: `ETH/USDT:USDT` (not `ETH/USDT`) — use `endswith(":USDT")` to match
 - Reconciliation INSERT must include stop_loss/take_profit columns (default 0)
 - After completing work: always update CLAUDE.md, 策略详解.md, and git tag+release
-- Adaptive risk: consecutive loss scaling (3→50%, 5→25%), win_rate<30% → 2h cooldown
-- Kelly Criterion connected: strategy-level Kelly<0.01 → reject signal
+- Adaptive risk: consecutive loss scaling (3→50%, 5→25%), win_rate<=30% → 2h cooldown + 2h grace period (prevents infinite re-trigger)
+- Kelly Criterion connected: strategy-level Kelly<=0 → reject signal; probation trade every 2h at min position for blocked strategies
+- Kelly min trades threshold: 5 (was 10); negative Kelly returns 0.0 (was clamped to 0.01)
 - Regime-aware strategy weights: trending favors trend_follower/momentum, ranging favors enhanced_bb_rsi/mean_reversion
 - MarketRegime.TRANSITIONING: ADX rapid drop or RSI divergence triggers conservative mode (max 5x leverage, min 0.5 confidence)
 - New strategies: ichimoku_cloud (Ichimoku Cloud TK-cross + cloud filter), enhanced_bb_rsi (BB+RSI+MACD ranging)
 - Profit lock connected to RiskManager: equity - locked_capital as position sizing base
+- `close_trade_live()` recalculates PnL from actual fill price (was using estimated current_price, causing Telegram/Dashboard PnL mismatch)
+- Circuit breaker: 75% of peak wallet (was 85%, too tight for $200 account)
 
 ## Versioning
 - Semantic versioning: vMAJOR.MINOR.PATCH (e.g., v1.1.0)
@@ -158,7 +161,7 @@
 - MINOR: new features, significant improvements (e.g., DefenseManager, signal pipeline)
 - PATCH: bug fixes, small tweaks (e.g., fix -2022 handling, fix timeout)
 - Tag + GitHub release for every MINOR/MAJOR bump; PATCH optional
-- Current: v1.7.0 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
+- Current: v1.7.1 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
 
 ## Architecture
 - 7-layer async trading system for Binance USDT-M Futures
