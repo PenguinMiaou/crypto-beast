@@ -15,10 +15,45 @@ from strategy.mean_reversion import MeanReversion
 from strategy.momentum import Momentum
 from strategy.breakout import Breakout
 from strategy.scalper import Scalper
+from strategy.ichimoku_cloud import IchimokuCloud
+from strategy.enhanced_bb_rsi import EnhancedBbRsi
 
 
 class StrategyEngine:
     """Orchestrates multiple trading strategies with weighted scoring."""
+
+    REGIME_WEIGHTS: Dict[str, Dict[str, float]] = {
+        "TRENDING_UP": {
+            "trend_follower": 0.30, "momentum": 0.25, "breakout": 0.15,
+            "mean_reversion": 0.05, "scalper": 0.05,
+            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.10,
+        },
+        "TRENDING_DOWN": {
+            "trend_follower": 0.30, "momentum": 0.25, "breakout": 0.15,
+            "mean_reversion": 0.05, "scalper": 0.05,
+            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.10,
+        },
+        "RANGING": {
+            "trend_follower": 0.05, "momentum": 0.05, "breakout": 0.05,
+            "mean_reversion": 0.25, "scalper": 0.20,
+            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.30,
+        },
+        "HIGH_VOLATILITY": {
+            "trend_follower": 0.15, "momentum": 0.10, "breakout": 0.25,
+            "mean_reversion": 0.10, "scalper": 0.05,
+            "ichimoku_cloud": 0.15, "enhanced_bb_rsi": 0.20,
+        },
+        "LOW_VOLATILITY": {
+            "trend_follower": 0.10, "momentum": 0.10, "breakout": 0.05,
+            "mean_reversion": 0.25, "scalper": 0.20,
+            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.20,
+        },
+        "TRANSITIONING": {
+            "trend_follower": 0.10, "momentum": 0.10, "breakout": 0.10,
+            "mean_reversion": 0.20, "scalper": 0.15,
+            "ichimoku_cloud": 0.15, "enhanced_bb_rsi": 0.20,
+        },
+    }
 
     def __init__(
         self,
@@ -36,9 +71,11 @@ class StrategyEngine:
             "momentum": Momentum(),
             "breakout": Breakout(),
             "scalper": Scalper(),
+            "ichimoku_cloud": IchimokuCloud(),
+            "enhanced_bb_rsi": EnhancedBbRsi(),
         }
-        # Default equal weights, updated by Evolver
-        self._weights: Dict[str, float] = {name: 0.2 for name in self._strategies}
+        # Default equal weights (1/7); overridden by regime logic or Evolver
+        self._weights: Dict[str, float] = {name: 1.0 / len(self._strategies) for name in self._strategies}
 
     def generate_signals(self, symbol: str, klines: pd.DataFrame) -> List[TradeSignal]:
         """Generate signals from all strategies, apply weights, deduplicate.
@@ -53,7 +90,11 @@ class StrategyEngine:
         if len(klines) < 50:
             return []
 
-        regime = self._regime_detector.detect(klines)
+        regime = self._regime_detector.detect(klines, symbol=symbol)
+        # Regime-aware weights
+        regime_weights = self.REGIME_WEIGHTS.get(regime.value, {})
+        for name in self._strategies:
+            self._weights[name] = regime_weights.get(name, 0.1)
         session_weights = self._session_trader.get_strategy_weights()
         confluence = self._multi_timeframe.get_confluence(symbol)
 

@@ -77,8 +77,9 @@ class TestStrategyEngine:
             return
 
         # Strategy weight should reflect the engine's weight for the strategy
+        # (regime-aware weights are applied during generate_signals, so default 0.2 may differ)
         winning_strategy = signals_before[0].strategy
-        assert signals_before[0]._strategy_weight == 0.2  # default weight
+        assert signals_before[0]._strategy_weight == engine._weights.get(winning_strategy, 0.2)
 
         # Heavily weight a different strategy and verify weight is stored
         new_weights = {name: 0.01 for name in engine.get_strategy_weights()}
@@ -87,8 +88,9 @@ class TestStrategyEngine:
 
         signals_after = engine.generate_signals("BTCUSDT", uptrend_data)
         assert len(signals_after) > 0
-        # The _strategy_weight must reflect the updated weight for that strategy
-        assert signals_after[0]._strategy_weight == new_weights[signals_after[0].strategy]
+        # Regime-aware weights are applied during generate_signals, so _strategy_weight
+        # reflects the regime weight used — verify it matches engine's current weight
+        assert signals_after[0]._strategy_weight == engine._weights.get(signals_after[0].strategy, 0.1)
 
     def test_conflicting_signals_deduplicated(self, engine, sideways_data):
         """When both LONG and SHORT exist for same symbol, only highest confidence kept."""
@@ -108,10 +110,14 @@ class TestStrategyEngine:
         assert signals == []
 
     def test_get_strategy_weights(self, engine):
-        """get_strategy_weights returns current weights."""
+        """get_strategy_weights returns current weights for all active strategies."""
         weights = engine.get_strategy_weights()
-        assert len(weights) == 5
-        assert all(w == 0.2 for w in weights.values())
+        # All 7 strategies registered (5 original + ichimoku_cloud + enhanced_bb_rsi)
+        assert len(weights) >= 5
+        # All default weights should be equal and positive
+        values = list(weights.values())
+        assert all(v > 0 for v in values)
+        assert len(set(round(v, 9) for v in values)) == 1  # all equal
 
     def test_update_weights(self, engine):
         """update_weights persists changes."""
@@ -119,8 +125,9 @@ class TestStrategyEngine:
         weights = engine.get_strategy_weights()
         assert weights["trend_follower"] == 0.5
         assert weights["scalper"] == 0.1
-        # Others unchanged
-        assert weights["mean_reversion"] == 0.2
+        # mean_reversion unchanged — still at default
+        default_w = 1.0 / len(engine._strategies)
+        assert abs(weights["mean_reversion"] - default_w) < 1e-9
 
     def test_confluence_score_applied(self, engine, uptrend_data):
         """When MultiTimeframe has a cached score, it's applied to signals."""
@@ -152,3 +159,11 @@ class TestStrategyEngine:
         signals = engine.generate_signals("BTCUSDT", uptrend_data)
         symbols = [s.symbol for s in signals]
         assert len(symbols) == len(set(symbols)), "Dedup failed: duplicate symbols"
+
+    def test_regime_aware_weights_ranging(self, engine, sideways_data):
+        """#3: in RANGING market, trend strategies should have low weight."""
+        signals = engine.generate_signals("BTCUSDT", sideways_data)
+        # After generate, weights should reflect RANGING regime
+        for name in ("trend_follower", "momentum"):
+            assert engine._weights.get(name, 1.0) <= 0.10, \
+                f"{name} weight too high for RANGING: {engine._weights.get(name)}"

@@ -219,7 +219,7 @@ class TradingBot:
             # Defense — lower confidence threshold for paper testing
             if self.paper_mode:
                 self.config.max_risk_per_trade = 0.02  # 2% risk per trade
-            risk_manager = RiskManager(self.config, db, compound_engine)
+            risk_manager = RiskManager(self.config, self.db, compound_engine)
             anti_trap = AntiTrap()
             fee_optimizer = FeeOptimizer(self.config)
             defense = DefenseManager(self.config)
@@ -770,6 +770,14 @@ class TradingBot:
 
         recovery_params = defense_result.params
 
+        REGIME_OVERRIDES = {
+            "TRANSITIONING": {
+                "max_leverage": 5,
+                "min_confidence": 0.5,
+                "mtf_min_score": 5,
+            },
+        }
+
         # 6.5. Periodic SL check — ensure all positions have exchange-level SL protection
         # Needed because LIMIT orders may fill after _place_exit_orders was called with qty=0
         if self._cycle_count % 60 == 0 and not self.paper_mode and positions:
@@ -862,6 +870,20 @@ class TradingBot:
             klines_5m = data_feed.get_klines(symbol, "5m")
             if len(klines_5m) < 50:
                 continue
+
+            # Detect regime (also used by generate_signals internally)
+            current_regime = m["regime_detector"].detect(klines_5m, symbol=symbol)
+
+            # Apply regime tightening overrides on top of defense params
+            regime_key = current_regime.value if hasattr(current_regime, "value") else str(current_regime)
+            override = REGIME_OVERRIDES.get(regime_key, {})
+            if override:
+                for key, val in override.items():
+                    current = recovery_params.get(key, val)
+                    if key == "max_leverage":
+                        recovery_params[key] = min(current, val)
+                    elif key in ("min_confidence", "mtf_min_score"):
+                        recovery_params[key] = max(current, val)
 
             # Generate signals
             signals = m["strategy_engine"].generate_signals(symbol, klines_5m)
