@@ -86,7 +86,8 @@ class LiveExecutor:
                             order_type: str, quantity: float,
                             price: Optional[float] = None,
                             stop_price: Optional[float] = None,
-                            reduce_only: bool = False) -> dict:
+                            reduce_only: bool = False,
+                            time_in_force: str = "GTC") -> dict:
         """Place order via Binance fapi direct call (hedge mode compatible)."""
         binance_sym = self._to_binance_symbol(symbol)
         params = {
@@ -98,7 +99,7 @@ class LiveExecutor:
         }
         if price and order_type.upper() == "LIMIT":
             params["price"] = str(round(price, 2))
-            params["timeInForce"] = "GTC"
+            params["timeInForce"] = time_in_force
         if stop_price:
             params["stopPrice"] = str(round(stop_price, 2))
         # Note: reduceOnly is not supported in hedge mode (positionSide handles it)
@@ -153,6 +154,7 @@ class LiveExecutor:
                     result = await self._place_order(
                         signal.symbol, side, position_side, order_type, qty,
                         price=tranche.get("price") if order_type == "LIMIT" else None,
+                        time_in_force=tranche.get("timeInForce", "GTC"),
                     )
 
                     order_id = result.get("orderId", f"LIVE-{uuid4().hex[:12]}")

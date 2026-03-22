@@ -93,7 +93,7 @@ class TestRiskManager:
             strategy="test", regime=MarketRegime.TRENDING_UP, timeframe_score=8,
         )
         order = rm.validate(high_conf, empty_portfolio)
-        assert order.leverage == 10
+        assert order.leverage == 7
 
         mid_conf = TradeSignal(
             symbol="BTCUSDT", direction=Direction.LONG, confidence=0.6,
@@ -139,8 +139,8 @@ class TestRiskManager:
         result_low = risk_manager.validate(sig_low, empty_portfolio)
         result_high = risk_manager.validate(sig_high, empty_portfolio)
         if result_low and result_high:
-            assert result_high.quantity > result_low.quantity * 1.5, (
-                "High confidence should get >1.5x the position of low confidence"
+            assert result_high.quantity > result_low.quantity * 1.2, (
+                "High confidence should get >1.2x the position of low confidence"
             )
 
     def test_directional_exposure_limit(self, long_signal):

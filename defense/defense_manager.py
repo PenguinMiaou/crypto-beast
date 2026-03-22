@@ -21,8 +21,8 @@ class DefenseResult:
 
 # Relaxed params for small accounts (vs old: NORMAL 0.5/6, CAUTIOUS 0.75/3/7, RECOVERY 0.8/2/8, CRITICAL 0.9/1/9)
 RECOVERY_PARAMS: Dict[RecoveryState, Dict[str, object]] = {
-    RecoveryState.NORMAL:   {"max_leverage": 10, "min_confidence": 0.3, "mtf_min_score": 5},
-    RecoveryState.CAUTIOUS: {"max_leverage": 7,  "min_confidence": 0.4, "mtf_min_score": 5},
+    RecoveryState.NORMAL:   {"max_leverage": 7, "min_confidence": 0.4, "mtf_min_score": 5},
+    RecoveryState.CAUTIOUS: {"max_leverage": 7, "min_confidence": 0.4, "mtf_min_score": 5},
     RecoveryState.RECOVERY: {"max_leverage": 5,  "min_confidence": 0.5, "mtf_min_score": 6},
     RecoveryState.CRITICAL: {"max_leverage": 3,  "min_confidence": 0.6, "mtf_min_score": 7},
 }

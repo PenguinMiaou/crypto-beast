@@ -110,14 +110,18 @@ class MarketRegimeDetector:
             price_now = close.iloc[-1]
             price_5ago = close.iloc[-6]
             if not (np.isnan(rsi_now) or np.isnan(rsi_5ago)):
-                # Bullish divergence: price lower but RSI higher
-                if price_now < price_5ago and rsi_now > rsi_5ago:
-                    self._last_regime[symbol] = raw_regime
-                    return MarketRegime.TRANSITIONING
-                # Bearish divergence: price higher but RSI lower
-                if price_now > price_5ago and rsi_now < rsi_5ago:
-                    self._last_regime[symbol] = raw_regime
-                    return MarketRegime.TRANSITIONING
+                # Require meaningful divergence, not noise
+                price_change_pct = abs(price_now - price_5ago) / price_5ago if price_5ago > 0 else 0
+                rsi_change = abs(rsi_now - rsi_5ago)
+                if price_change_pct > 0.005 and rsi_change > 5:
+                    # Bullish divergence: price lower but RSI higher
+                    if price_now < price_5ago and rsi_now > rsi_5ago:
+                        self._last_regime[symbol] = raw_regime
+                        return MarketRegime.TRANSITIONING
+                    # Bearish divergence: price higher but RSI lower
+                    if price_now > price_5ago and rsi_now < rsi_5ago:
+                        self._last_regime[symbol] = raw_regime
+                        return MarketRegime.TRANSITIONING
 
         # 3. Per-symbol regime change cooldown
         if symbol:

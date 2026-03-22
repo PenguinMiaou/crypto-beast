@@ -33,7 +33,7 @@ class TestDefenseManager:
         result = dm.check(_make_portfolio(100, 100))
         assert result.action == ShieldAction.CONTINUE
         assert result.recovery_state == RecoveryState.NORMAL
-        assert result.params["max_leverage"] == 10
+        assert result.params["max_leverage"] == 7
 
     def test_cautious_at_8pct(self):
         from defense.defense_manager import DefenseManager
@@ -106,8 +106,8 @@ class TestDefenseManager:
     def test_relaxed_params_vs_old(self):
         """Verify params are relaxed compared to old RecoveryMode."""
         from defense.defense_manager import RECOVERY_PARAMS
-        # Old NORMAL had min_confidence 0.5, new has 0.3
-        assert RECOVERY_PARAMS[RecoveryState.NORMAL]["min_confidence"] == 0.3
+        # Old NORMAL had min_confidence 0.5, new has 0.4
+        assert RECOVERY_PARAMS[RecoveryState.NORMAL]["min_confidence"] == 0.4
         # Old CRITICAL had max_leverage 1, new has 3
         assert RECOVERY_PARAMS[RecoveryState.CRITICAL]["max_leverage"] == 3
 

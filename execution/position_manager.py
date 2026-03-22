@@ -141,7 +141,21 @@ class PositionManager:
                     reason = "PROFIT_PROTECT"
                     exit_price = current_price
 
-            # 3. Timeout: close stale positions with small PnL
+            # 3. Fast stop: if position opened < 30min ago and leveraged loss > 1%
+            if reason is None and entry_time and profit_pct < -0.01:
+                try:
+                    entry_dt = datetime.fromisoformat(entry_time) if isinstance(entry_time, str) else entry_time
+                    if entry_dt.tzinfo is None:
+                        entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+                    minutes_held = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 60
+                    if minutes_held <= 30:
+                        reason = "FAST_STOP"
+                        exit_price = current_price
+                        logger.info(f"Fast stop: {symbol} {side} lost {profit_pct:.1%} in {minutes_held:.0f}min")
+                except (ValueError, TypeError):
+                    pass
+
+            # 4. Timeout: close stale positions with small PnL
             if reason is None:
                 try:
                     if entry_time:

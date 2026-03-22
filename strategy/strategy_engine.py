@@ -14,7 +14,7 @@ from strategy.trend_follower import TrendFollower
 from strategy.mean_reversion import MeanReversion
 from strategy.momentum import Momentum
 from strategy.breakout import Breakout
-from strategy.scalper import Scalper
+from strategy.funding_rate_arb import FundingRateArb
 from strategy.ichimoku_cloud import IchimokuCloud
 from strategy.enhanced_bb_rsi import EnhancedBbRsi
 
@@ -23,34 +23,35 @@ class StrategyEngine:
     """Orchestrates multiple trading strategies with weighted scoring."""
 
     REGIME_WEIGHTS: Dict[str, Dict[str, float]] = {
+        # scalper disabled (20% win rate, net loss) — weights redistributed to remaining strategies
         "TRENDING_UP": {
-            "trend_follower": 0.30, "momentum": 0.25, "breakout": 0.15,
-            "mean_reversion": 0.05, "scalper": 0.05,
-            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.10,
+            "trend_follower": 0.32, "momentum": 0.27, "breakout": 0.16,
+            "mean_reversion": 0.05, "funding_rate_arb": 0.10,
+            "ichimoku_cloud": 0.10,
         },
         "TRENDING_DOWN": {
-            "trend_follower": 0.30, "momentum": 0.25, "breakout": 0.15,
-            "mean_reversion": 0.05, "scalper": 0.05,
-            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.10,
+            "trend_follower": 0.32, "momentum": 0.27, "breakout": 0.16,
+            "mean_reversion": 0.05, "funding_rate_arb": 0.10,
+            "ichimoku_cloud": 0.10,
         },
         "RANGING": {
             "trend_follower": 0.05, "momentum": 0.05, "breakout": 0.05,
-            "mean_reversion": 0.25, "scalper": 0.20,
-            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.30,
+            "mean_reversion": 0.30, "funding_rate_arb": 0.10,
+            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.35,
         },
         "HIGH_VOLATILITY": {
             "trend_follower": 0.15, "momentum": 0.10, "breakout": 0.25,
-            "mean_reversion": 0.10, "scalper": 0.05,
-            "ichimoku_cloud": 0.15, "enhanced_bb_rsi": 0.20,
+            "mean_reversion": 0.10, "funding_rate_arb": 0.15,
+            "ichimoku_cloud": 0.15, "enhanced_bb_rsi": 0.10,
         },
         "LOW_VOLATILITY": {
             "trend_follower": 0.10, "momentum": 0.10, "breakout": 0.05,
-            "mean_reversion": 0.25, "scalper": 0.20,
-            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.20,
+            "mean_reversion": 0.30, "funding_rate_arb": 0.10,
+            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.25,
         },
         "TRANSITIONING": {
-            "trend_follower": 0.10, "momentum": 0.10, "breakout": 0.10,
-            "mean_reversion": 0.20, "scalper": 0.15,
+            "trend_follower": 0.10, "momentum": 0.10, "breakout": 0.12,
+            "mean_reversion": 0.23, "funding_rate_arb": 0.10,
             "ichimoku_cloud": 0.15, "enhanced_bb_rsi": 0.20,
         },
     }
@@ -70,7 +71,8 @@ class StrategyEngine:
             "mean_reversion": MeanReversion(),
             "momentum": Momentum(),
             "breakout": Breakout(),
-            "scalper": Scalper(),
+            # "scalper": Scalper(),  # Disabled: 20% win rate, net loss
+            "funding_rate_arb": FundingRateArb(),
             "ichimoku_cloud": IchimokuCloud(),
             "enhanced_bb_rsi": EnhancedBbRsi(),
         }
@@ -111,6 +113,22 @@ class StrategyEngine:
                 if confluence is not None:
                     sig.timeframe_score = confluence.score
                 signals.append(sig)
+
+        # Ensemble voting: boost confidence when multiple strategies agree on same direction
+        votes: Dict[str, Dict[str, int]] = {}  # symbol -> {LONG: count, SHORT: count}
+        for sig in signals:
+            dir_key = sig.direction.value
+            votes.setdefault(sig.symbol, {"LONG": 0, "SHORT": 0})
+            votes[sig.symbol][dir_key] += 1
+
+        for sig in signals:
+            agreement = votes.get(sig.symbol, {}).get(sig.direction.value, 1)
+            if agreement >= 3:
+                sig.confidence = min(0.95, sig.confidence + 0.10)  # Strong consensus
+            elif agreement >= 2:
+                sig.confidence = min(0.95, sig.confidence + 0.05)  # Moderate consensus
+            elif agreement == 1:
+                sig.confidence = max(0.30, sig.confidence - 0.05)  # No consensus, penalize
 
         # Deduplicate: per symbol, keep highest weighted_score signal
         # weighted_score = confidence * strategy_weight ensures regime-appropriate

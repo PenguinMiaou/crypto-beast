@@ -12,8 +12,8 @@ class Config:
     starting_capital: float = 100.0
 
     # Leverage
-    max_leverage: int = 10
-    leverage_high_confidence: int = 10
+    max_leverage: int = 7
+    leverage_high_confidence: int = 7
     leverage_medium_confidence: int = 5
 
     # Risk
@@ -33,6 +33,7 @@ class Config:
     halt_cooldown_hours: int = 8
 
     # Fees
+    # NOTE: Buy ~$5 BNB into futures account for 10% fee discount
     maker_fee: float = 0.0002
     taker_fee: float = 0.0004
     daily_fee_budget: float = 0.005

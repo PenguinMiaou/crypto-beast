@@ -5,6 +5,7 @@ import asyncio
 import fcntl
 import json
 import os
+import random
 import signal as signal_module
 import subprocess
 import sys
@@ -695,14 +696,14 @@ class TradingBot:
                 self._circuit_breaker_triggered = True
                 logger.critical(
                     f"CIRCUIT BREAKER: wallet ${wallet_balance:.2f} < floor ${circuit_floor:.2f} "
-                    f"(80% of peak ${self._peak_wallet:.2f})"
+                    f"({self.config.circuit_breaker_pct:.0%} of peak ${self._peak_wallet:.2f})"
                 )
                 positions = await m["executor"].get_positions()
                 await self._emergency_close(positions)
                 m["notifier"].send(
                     "CIRCUIT BREAKER",
                     f"熔断触发！钱包 ${wallet_balance:.2f} 低于安全底线 ${circuit_floor:.2f}\n"
-                    f"(历史最高 ${self._peak_wallet:.2f} 的 80%)\n"
+                    f"(历史最高 ${self._peak_wallet:.2f} 的 {self.config.circuit_breaker_pct:.0%})\n"
                     f"所有仓位已平仓，交易已停止。\n"
                     f"发送 /resume 手动恢复交易。",
                     level="critical",
@@ -986,8 +987,8 @@ class TradingBot:
                         pass
                     continue
 
-                # Risk validation (lower threshold in paper mode)
-                min_conf = 0.3
+                # Risk validation
+                min_conf = 0.4
                 order = m["risk_manager"].validate(signal, portfolio, min_confidence=min_conf)
                 if order is None:
                     try:
@@ -1037,10 +1038,30 @@ class TradingBot:
                 else:
                     plan = m["smart_order"].plan_execution(order, urgency=signal.confidence)
 
-                # LIMIT entry override removed (v1.6.0 fix #2):
-                # Small accounts ($200) save ~$0.004/trade with LIMIT vs MARKET,
-                # but risk LIMIT not filling + no SL placement (5min unprotected window).
-                # All entries now use MARKET for reliable fills.
+                # For low-urgency trades, use LIMIT to save fees (maker 0.02% vs taker 0.04%)
+                # IOC (Immediate-or-Cancel) prevents stale orders — cancels if not filled immediately
+                if signal.confidence < 0.6 and plan.entry_tranches:
+                    first_tranche = plan.entry_tranches[0]
+                    from core.models import Direction as _Direction
+                    if signal.direction == _Direction.LONG:
+                        limit_price = round(signal.entry_price * 0.9998, 2)  # 0.02% below
+                    else:
+                        limit_price = round(signal.entry_price * 1.0002, 2)  # 0.02% above
+                    first_tranche["type"] = "LIMIT"
+                    first_tranche["price"] = limit_price
+                    first_tranche["timeInForce"] = "IOC"
+
+                # Randomize entry timing to avoid signal crowding (game theory recommendation)
+                if random.random() < 0.3:  # 30% of trades get delayed
+                    delay_seconds = random.randint(5, 15)
+                    await asyncio.sleep(delay_seconds)
+
+                # Randomize position size ±10% (mixed strategy)
+                size_jitter = 1.0 + random.uniform(-0.10, 0.10)
+                if plan.entry_tranches:
+                    plan.entry_tranches[0]["quantity"] = round(
+                        plan.entry_tranches[0]["quantity"] * size_jitter, 8
+                    )
 
                 # Close opposite-direction position first (flip instead of hedge)
                 from core.models import Direction
@@ -1126,6 +1147,16 @@ class TradingBot:
                 f"Cycle {self._cycle_count} | Equity: ${equity:.2f} | "
                 f"Positions: {len(positions)} | Session: {m['session_trader'].get_current_session()}"
             )
+
+        # Stats checkpoint every 100 cycles
+        if self._cycle_count % 100 == 0:
+            try:
+                total = self.db.execute(
+                    "SELECT COUNT(*) FROM trades WHERE status='CLOSED'"
+                ).fetchone()[0]
+                logger.info(f"Stats checkpoint: {total} closed trades (need 200+ for validation)")
+            except Exception:
+                pass
 
     async def _close_symbol_by_watchdog(self, symbol: str) -> None:
         """Close a specific symbol position via watchdog command."""
