@@ -1,5 +1,6 @@
 # strategy/base_strategy.py
 from abc import ABC, abstractmethod
+from typing import List
 
 import pandas as pd
 
@@ -10,6 +11,6 @@ class BaseStrategy(ABC):
     name: str = "base"
 
     @abstractmethod
-    def generate(self, klines: pd.DataFrame, symbol: str, regime: MarketRegime) -> list[TradeSignal]:
+    def generate(self, klines: pd.DataFrame, symbol: str, regime: MarketRegime) -> List[TradeSignal]:
         """Generate trade signals from OHLCV data."""
         pass

@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 import ta
-from typing import Optional
+from typing import Dict, Optional
 
 from core.models import MarketRegime
 
@@ -31,11 +31,17 @@ class MarketRegimeDetector:
         self.bb_high_pct = bb_high_pct
         self.bb_low_pct = bb_low_pct
 
-    def detect(self, klines: pd.DataFrame) -> MarketRegime:
+        # Per-symbol state for transition detection
+        self._last_regime: Dict[str, MarketRegime] = {}
+        self._regime_change_bar: Dict[str, int] = {}
+        self._transition_cooldown: int = 6  # 6 bars (30min on 5m TF)
+
+    def detect(self, klines: pd.DataFrame, symbol: str = "") -> MarketRegime:
         """Detect market regime from OHLCV data.
 
         Args:
             klines: DataFrame with columns: open, high, low, close, volume
+            symbol: Symbol identifier used for per-symbol transition tracking.
 
         Returns:
             MarketRegime enum value.
@@ -57,31 +63,77 @@ class MarketRegimeDetector:
         ema_fast_last = ema_fast.iloc[-1]
         ema_slow_last = ema_slow.iloc[-1]
 
-        # Trend detection via ADX + EMA alignment (checked first)
+        # === Determine raw regime (store instead of returning immediately) ===
+        raw_regime = MarketRegime.RANGING  # default
+
         if not np.isnan(adx) and adx > self.adx_trending_threshold:
             if ema_fast_last > ema_slow_last:
-                return MarketRegime.TRENDING_UP
+                raw_regime = MarketRegime.TRENDING_UP
             else:
-                return MarketRegime.TRENDING_DOWN
+                raw_regime = MarketRegime.TRENDING_DOWN
+        elif not np.isnan(adx) and adx < self.adx_ranging_threshold:
+            raw_regime = MarketRegime.RANGING
+        else:
+            # Bollinger Band width for volatility regimes (ADX between 20-25)
+            bb = ta.volatility.BollingerBands(close=close, window=self.bb_period)
+            bb_width = bb.bollinger_wband()
+            bb_width_clean = bb_width.dropna()
 
-        # Ranging when ADX is clearly low
-        if not np.isnan(adx) and adx < self.adx_ranging_threshold:
-            return MarketRegime.RANGING
+            if len(bb_width_clean) > 0:
+                current_width = bb_width_clean.iloc[-1]
+                pct_high = np.percentile(bb_width_clean, self.bb_high_pct)
+                pct_low = np.percentile(bb_width_clean, self.bb_low_pct)
 
-        # Bollinger Band width for volatility regimes (ADX between 20-25)
-        bb = ta.volatility.BollingerBands(close=close, window=self.bb_period)
-        bb_width = bb.bollinger_wband()
-        bb_width_clean = bb_width.dropna()
+                if current_width > pct_high:
+                    raw_regime = MarketRegime.HIGH_VOLATILITY
+                elif current_width < pct_low:
+                    raw_regime = MarketRegime.LOW_VOLATILITY
+                # else remains RANGING
 
-        if len(bb_width_clean) > 0:
-            current_width = bb_width_clean.iloc[-1]
-            pct_high = np.percentile(bb_width_clean, self.bb_high_pct)
-            pct_low = np.percentile(bb_width_clean, self.bb_low_pct)
+        # === Transition Detection (added for v1.7) ===
 
-            if current_width > pct_high:
-                return MarketRegime.HIGH_VOLATILITY
-            if current_width < pct_low:
-                return MarketRegime.LOW_VOLATILITY
+        # 1. ADX rapid drop = regime transitioning
+        adx_series = adx_indicator.adx()
+        if len(adx_series) > 3:
+            adx_3_ago = adx_series.iloc[-4]
+            if not np.isnan(adx_3_ago):
+                adx_drop = adx_3_ago - adx
+                if adx_drop > 8:
+                    self._last_regime[symbol] = raw_regime
+                    return MarketRegime.TRANSITIONING
 
-        # Default: ranging
-        return MarketRegime.RANGING
+        # 2. RSI/Price divergence detection
+        rsi_series = ta.momentum.rsi(close, window=14)
+        if len(close) > 10 and len(rsi_series) > 10:
+            rsi_now = rsi_series.iloc[-1]
+            rsi_5ago = rsi_series.iloc[-6]
+            price_now = close.iloc[-1]
+            price_5ago = close.iloc[-6]
+            if not (np.isnan(rsi_now) or np.isnan(rsi_5ago)):
+                # Bullish divergence: price lower but RSI higher
+                if price_now < price_5ago and rsi_now > rsi_5ago:
+                    self._last_regime[symbol] = raw_regime
+                    return MarketRegime.TRANSITIONING
+                # Bearish divergence: price higher but RSI lower
+                if price_now > price_5ago and rsi_now < rsi_5ago:
+                    self._last_regime[symbol] = raw_regime
+                    return MarketRegime.TRANSITIONING
+
+        # 3. Per-symbol regime change cooldown
+        if symbol:
+            last = self._last_regime.get(symbol)
+            if last is not None and raw_regime != last:
+                # Regime just changed — record the change bar and signal TRANSITIONING
+                self._last_regime[symbol] = raw_regime
+                self._regime_change_bar[symbol] = len(klines)
+                return MarketRegime.TRANSITIONING
+
+            # Update last known regime
+            self._last_regime[symbol] = raw_regime
+
+            # Still within cooldown window after a recent regime change
+            change_bar = self._regime_change_bar.get(symbol, 0)
+            if change_bar > 0 and (len(klines) - change_bar) < self._transition_cooldown:
+                return MarketRegime.TRANSITIONING
+
+        return raw_regime

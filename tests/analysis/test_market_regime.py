@@ -69,3 +69,34 @@ class TestMarketRegimeDetector:
     def test_ranging_detected(self, detector, sideways_data):
         result = detector.detect(sideways_data)
         assert result == MarketRegime.RANGING
+
+
+def test_transitioning_on_regime_change():
+    """#6: regime change should return TRANSITIONING."""
+    detector = MarketRegimeDetector()
+
+    # First call: strong uptrend
+    n = 100
+    close1 = 65000 + np.arange(n) * 100.0
+    df1 = pd.DataFrame({
+        "open": close1 - 10,
+        "high": close1 + 50,
+        "low": close1 - 50,
+        "close": close1,
+        "volume": np.random.uniform(500, 1500, n),
+    })
+    r1 = detector.detect(df1, symbol="BTCUSDT")
+
+    # Second call: sudden reversal (prices drop)
+    close2 = close1[-1] - np.arange(n) * 100.0
+    df2 = pd.DataFrame({
+        "open": close2 + 10,
+        "high": close2 + 50,
+        "low": close2 - 50,
+        "close": close2,
+        "volume": np.random.uniform(500, 1500, n),
+    })
+    r2 = detector.detect(df2, symbol="BTCUSDT")
+
+    # Should detect transition (regime changed from TRENDING_UP to TRENDING_DOWN)
+    assert r2 == MarketRegime.TRANSITIONING, f"Expected TRANSITIONING, got {r2}"

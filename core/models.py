@@ -20,6 +20,7 @@ class MarketRegime(Enum):
     RANGING = "RANGING"
     HIGH_VOLATILITY = "HIGH_VOLATILITY"
     LOW_VOLATILITY = "LOW_VOLATILITY"
+    TRANSITIONING = "TRANSITIONING"  # regime change in progress
 
 class RecoveryState(Enum):
     NORMAL = "NORMAL"
