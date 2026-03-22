@@ -1294,27 +1294,34 @@ class TradingBot:
                 except Exception as e:
                     logger.debug(f"Funding rate update failed: {e}")
 
-            # Daily altcoin rescan at 00:15 UTC
-            if now.hour == 0 and now.minute == 15:
+            # Altcoin rescan every 4 hours (00:15, 04:15, 08:15, 12:15, 16:15, 20:15 UTC)
+            if now.hour % 4 == 0 and now.minute == 15:
                 try:
                     tickers = await self.exchange.fetch_tickers()
+                    radar = m["altcoin_radar"]
+                    radar._scores.clear()
+                    radar._filtered_out.clear()
+                    scored = 0
                     for symbol, ticker in tickers.items():
                         # Binance Futures ccxt format: "ETH/USDT:USDT"
-                        if symbol.endswith(":USDT") and "/" in symbol and "BTC/USDT" not in symbol:
-                            # Convert "ETH/USDT:USDT" → "ETHUSDT"
+                        if symbol.endswith(":USDT") and "/" in symbol:
                             internal_sym = symbol.split("/")[0] + "USDT"
-                            m["altcoin_radar"].score_coin(
+                            vol = ticker.get("quoteVolume", 0) or 0
+                            pct = ticker.get("percentage", 0) or 0
+                            result = radar.score_coin(
                                 internal_sym,
-                                volume_24h=ticker.get("quoteVolume", 0) or 0,
-                                price_change_24h=ticker.get("percentage", 0) or 0,
+                                volume_24h=vol,
+                                price_change_24h=pct,
                             )
-                    top_alts = m["altcoin_radar"].get_top_alts()
-                    # Always keep BTC + ETH + SOL as base, add top alts
+                            if result is not None:
+                                scored += 1
+                    top_alts = radar.get_top_alts()
                     base = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
                     extra = [s for s in top_alts if s not in base]
                     new_symbols = base + extra[:2]  # Max 5 symbols total
                     m["data_feed"].symbols = new_symbols
-                    logger.info(f"AltcoinRadar updated: trading {new_symbols}")
+                    filtered = len(radar.get_filtered_out())
+                    logger.info(f"AltcoinRadar: scored {scored}, filtered {filtered}, trading {new_symbols}")
                 except Exception as e:
                     logger.error(f"Altcoin rescan failed: {e}")
 
