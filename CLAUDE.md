@@ -3,7 +3,7 @@
 ## Environment
 - Python 3.9.6 — use `Optional[X]` not `X | None`, `Dict`/`List` not `dict`/`list`
 - Venv at `.venv/`
-- Tests: `source .venv/bin/activate && python -m pytest -q` (434 tests)
+- Tests: `source .venv/bin/activate && python -m pytest -q` (459 tests)
 - Entry point: `crypto_system.py` (NOT main.py — renamed to avoid conflict with other projects)
 
 ## Running
@@ -145,6 +145,12 @@
 - Binance Futures ccxt ticker format: `ETH/USDT:USDT` (not `ETH/USDT`) — use `endswith(":USDT")` to match
 - Reconciliation INSERT must include stop_loss/take_profit columns (default 0)
 - After completing work: always update CLAUDE.md, 策略详解.md, and git tag+release
+- Adaptive risk: consecutive loss scaling (3→50%, 5→25%), win_rate<30% → 2h cooldown
+- Kelly Criterion connected: strategy-level Kelly<0.01 → reject signal
+- Regime-aware strategy weights: trending favors trend_follower/momentum, ranging favors enhanced_bb_rsi/mean_reversion
+- MarketRegime.TRANSITIONING: ADX rapid drop or RSI divergence triggers conservative mode (max 5x leverage, min 0.5 confidence)
+- New strategies: ichimoku_cloud (Ichimoku Cloud TK-cross + cloud filter), enhanced_bb_rsi (BB+RSI+MACD ranging)
+- Profit lock connected to RiskManager: equity - locked_capital as position sizing base
 
 ## Versioning
 - Semantic versioning: vMAJOR.MINOR.PATCH (e.g., v1.1.0)
@@ -152,7 +158,7 @@
 - MINOR: new features, significant improvements (e.g., DefenseManager, signal pipeline)
 - PATCH: bug fixes, small tweaks (e.g., fix -2022 handling, fix timeout)
 - Tag + GitHub release for every MINOR/MAJOR bump; PATCH optional
-- Current: v1.6.0 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
+- Current: v1.7.0 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
 
 ## Architecture
 - 7-layer async trading system for Binance USDT-M Futures
@@ -163,9 +169,12 @@
 - WebSocket data: `data/ws_manager.py` — real-time aggTrade, forceOrder, depth streams
 - User Data Stream: `data/user_data_stream.py` — account/order updates via WebSocket
 - Unix IPC: `ipc/socket_ipc.py` — watchdog↔bot communication via /tmp/crypto_beast_ipc.sock
+- Backtest: `evolution/backtest_lab.py` with dynamic regime, `evolution/performance_analyzer.py` for metrics
+- Historical data: `data/historical_loader.py` — Binance klines → SQLite cache
+- ML Regime: `analysis/ml_regime.py` — LightGBM detector with rule fallback, weekly retrain via `scripts/train_regime.py`
 
 ## Code Patterns
-- Strategies: `BaseStrategy.generate(klines, symbol, regime) -> list[TradeSignal]`
+- Strategies: `BaseStrategy.generate(klines, symbol, regime) -> List[TradeSignal]`
 - Data modules: `process_event(data)` to feed, `get_signal(symbol)` to read
 - Defense: `DefenseManager.check(portfolio) -> DefenseResult` (unified state machine)
 - LiveExecutor: `_place_order()` wraps `fapiPrivatePostOrder`, `_place_algo_order()` for SL/TP
