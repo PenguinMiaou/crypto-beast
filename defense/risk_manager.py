@@ -171,11 +171,22 @@ class RiskManager:
                 return None
 
         # Kelly criterion: reject strategies with negative expected value
+        # But allow a "probation trade" every 2h to give strategies a chance to recover
         if self._compound:
             strategy_kelly = self._compound.get_kelly_fraction(signal.strategy)
             if strategy_kelly <= 0.0:
-                logger.debug(f"Signal rejected: Kelly too low ({strategy_kelly:.4f}) for {signal.strategy}")
-                return None
+                # Check if enough time has passed for a probation trade
+                now = datetime.now(timezone.utc)
+                probation_key = f"_kelly_probation_{signal.strategy}"
+                last_probation = getattr(self, probation_key, None)
+                if last_probation is None or (now - last_probation).total_seconds() >= 7200:
+                    # Allow one probation trade at minimum position size
+                    setattr(self, probation_key, now)
+                    logger.info(f"Kelly probation trade allowed for {signal.strategy} (kelly={strategy_kelly:.4f})")
+                    # Will use minimum position size (adaptive_scale applied later)
+                else:
+                    logger.debug(f"Signal rejected: Kelly too low ({strategy_kelly:.4f}) for {signal.strategy}")
+                    return None
 
         # Check max concurrent positions
         if len(portfolio.positions) >= self.config.max_concurrent_positions:
@@ -251,6 +262,9 @@ class RiskManager:
                 )
                 return None
 
+        # Kelly probation: force minimum position size
+        is_probation = self._compound and self._compound.get_kelly_fraction(signal.strategy) <= 0.0
+
         # Confidence-scaled risk: continuous scaling from 1.0x at min confidence to 3.5x at 1.0
         base_risk = self.config.max_risk_per_trade  # 0.03 base
         MIN_CONF = 0.3
@@ -271,6 +285,11 @@ class RiskManager:
 
         # Position size in base currency
         quantity = risk_per_trade / risk_distance
+
+        # Probation trades: cap at minimum notional (smallest possible trade)
+        if is_probation:
+            min_not = MIN_NOTIONAL.get(signal.symbol, DEFAULT_MIN_NOTIONAL)
+            quantity = min(quantity, min_not / entry * 1.05)  # Just above minimum
 
         # Check notional (quantity * price) meets minimum
         min_notional = MIN_NOTIONAL.get(signal.symbol, DEFAULT_MIN_NOTIONAL)
