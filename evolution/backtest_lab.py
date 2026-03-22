@@ -4,6 +4,7 @@ import pandas as pd
 from typing import Dict, List, Optional
 from core.models import (BacktestResult, WalkForwardResult, MonteCarloResult,
                           MarketRegime, Direction)
+from analysis.market_regime import MarketRegimeDetector
 
 
 class BacktestLab:
@@ -13,7 +14,7 @@ class BacktestLab:
 
     def run_backtest(
         self, strategy, data: pd.DataFrame, symbol: str = "BTCUSDT",
-        starting_capital: float = 100.0, regime: MarketRegime = MarketRegime.RANGING
+        starting_capital: float = 100.0, regime: Optional[MarketRegime] = None
     ) -> BacktestResult:
         """Run a backtest of a strategy on historical data."""
         equity = starting_capital
@@ -25,6 +26,8 @@ class BacktestLab:
         lookback = 50  # Minimum candles needed
         if len(data) < lookback:
             return BacktestResult(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, [])
+
+        detector = MarketRegimeDetector() if regime is None else None
 
         for i in range(lookback, len(data)):
             bar = data.iloc[i]
@@ -71,7 +74,15 @@ class BacktestLab:
             # Generate new signals if no position
             if position is None:
                 window = data.iloc[:i + 1]
-                signals = strategy.generate(window, symbol, regime)
+                if regime is None:
+                    lookback_window = data.iloc[max(0, i - lookback):i + 1]
+                    if len(lookback_window) >= 30:
+                        current_regime = detector.detect(lookback_window, symbol=symbol)
+                    else:
+                        current_regime = MarketRegime.RANGING
+                else:
+                    current_regime = regime
+                signals = strategy.generate(window, symbol, current_regime)
                 if signals:
                     sig = signals[0]  # Take best signal
                     # Calculate position size (2% risk)

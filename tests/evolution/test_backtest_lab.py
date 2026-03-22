@@ -217,3 +217,13 @@ class TestRunMonteCarlo:
         assert isinstance(mc, MonteCarloResult)
         assert mc.worst_case_drawdown >= 0
         assert 0 <= mc.probability_of_ruin <= 1.0
+
+
+def test_backtest_dynamic_regime(sample_klines):
+    from evolution.backtest_lab import BacktestLab
+    from strategy.trend_follower import TrendFollower
+    lab = BacktestLab()
+    # No regime passed — should detect dynamically
+    result = lab.run_backtest(TrendFollower(), sample_klines, symbol="BTCUSDT",
+                              starting_capital=100.0)
+    assert result.total_trades >= 0
