@@ -59,7 +59,17 @@ class LiveExecutor:
                        "BNBUSDT": 2, "XRPUSDT": 1, "DOGEUSDT": 0,
                        "ADAUSDT": 0, "AVAXUSDT": 1, "LINKUSDT": 1, "DOTUSDT": 1}
         binance_sym = self._to_binance_symbol(symbol)
-        return precisions.get(binance_sym, 3)
+        if binance_sym in precisions:
+            return precisions[binance_sym]
+        # Try to get from exchange markets info for dynamic altcoins
+        try:
+            ccxt_sym = self._to_ccxt_symbol(symbol)
+            market = self.exchange.market(ccxt_sym)
+            if market and "precision" in market:
+                return market["precision"].get("amount", 3)
+        except Exception:
+            pass
+        return 3  # Safe default
 
     def _round_qty(self, symbol: str, qty: float) -> float:
         """Round quantity UP to symbol's precision to meet minimum notional."""
@@ -163,10 +173,21 @@ class LiveExecutor:
 
                     # If market order filled immediately
                     if filled == 0 and order_type == "MARKET":
-                        # Wait briefly and check order status
-                        await asyncio.sleep(0.5)
-                        filled = qty
-                        avg_price = signal.entry_price
+                        # Query actual order status instead of assuming filled
+                        await asyncio.sleep(1)
+                        try:
+                            order_status = await self.exchange.fapiPrivateGetOrder({
+                                "symbol": binance_sym,
+                                "orderId": order_id,
+                            })
+                            filled = float(order_status.get("executedQty", 0))
+                            avg_price = float(order_status.get("avgPrice", 0))
+                            if filled == 0:
+                                logger.warning(f"MARKET order {order_id} still unfilled after 1s, skipping")
+                                continue  # Skip to next tranche or fail
+                        except Exception:
+                            filled = qty  # Fallback to old behavior if query fails
+                            avg_price = signal.entry_price
 
                     fee_cost = filled * (avg_price if avg_price > 0 else signal.entry_price) * self.TAKER_FEE
 

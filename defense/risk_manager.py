@@ -246,7 +246,7 @@ class RiskManager:
         tp = signal.take_profit
         if entry > 0 and tp > 0:
             tp_distance_pct = abs(tp - entry) / entry
-            min_profit_pct = self.config.taker_fee * 2 * 3 / leverage  # 3x round-trip fees / leverage
+            min_profit_pct = self.config.taker_fee * 2 * 3  # 3x round-trip fees (fee is per notional, not margin)
             if tp_distance_pct < min_profit_pct:
                 logger.debug(
                     f"Signal rejected: TP too close ({tp_distance_pct:.4%} < {min_profit_pct:.4%} min for {leverage}x)"
@@ -301,6 +301,11 @@ class RiskManager:
         # Apply adaptive risk scaling to final quantity
         if self._adaptive:
             quantity = quantity * self._adaptive.get_scale_factor()
+            # Re-check notional after adaptive scaling
+            final_notional = quantity * entry
+            if final_notional < min_notional:
+                logger.debug(f"Signal rejected: post-adaptive notional ${final_notional:.2f} < min ${min_notional}")
+                return None
 
         return ValidatedOrder(
             signal=signal,

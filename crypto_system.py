@@ -1055,6 +1055,18 @@ class TradingBot:
                 if random.random() < 0.3:  # 30% of trades get delayed
                     delay_seconds = random.randint(5, 15)
                     await asyncio.sleep(delay_seconds)
+                    # Check if price moved too much during delay
+                    try:
+                        ccxt_ticker_sym = signal.symbol[:-4] + "/USDT:USDT" if signal.symbol.endswith("USDT") else signal.symbol
+                        current_ticker = await self.exchange.fetch_ticker(ccxt_ticker_sym)
+                        current_price = current_ticker.get("last", signal.entry_price)
+                        if current_price and signal.entry_price > 0:
+                            drift = abs(current_price - signal.entry_price) / signal.entry_price
+                            if drift > 0.005:  # >0.5% price drift
+                                logger.debug(f"Signal stale after delay: {signal.symbol} drifted {drift:.2%}, skipping")
+                                continue
+                    except Exception:
+                        pass  # If fetch fails, proceed with original signal
 
                 # Randomize position size ±10% (mixed strategy)
                 size_jitter = 1.0 + random.uniform(-0.10, 0.10)
@@ -1065,6 +1077,7 @@ class TradingBot:
 
                 # Close opposite-direction position first (flip instead of hedge)
                 from core.models import Direction
+                flip_failed = False
                 for pos in positions:
                     if pos.symbol == signal.symbol and pos.direction != signal.direction:
                         logger.info(f"Flipping {signal.symbol}: closing {pos.direction.value} before opening {signal.direction.value}")
@@ -1095,8 +1108,10 @@ class TradingBot:
                         else:
                             # Close failed — don't open new position
                             logger.warning(f"Flip close failed for {pos.symbol}: {close_result.error}, aborting flip")
-                            continue
+                            flip_failed = True
                         break
+                if flip_failed:
+                    continue
 
                 # Execute
                 result = await m["executor"].execute(plan)

@@ -25,14 +25,14 @@ class StrategyEngine:
     REGIME_WEIGHTS: Dict[str, Dict[str, float]] = {
         # scalper disabled (20% win rate, net loss) — weights redistributed to remaining strategies
         "TRENDING_UP": {
-            "trend_follower": 0.32, "momentum": 0.27, "breakout": 0.16,
+            "trend_follower": 0.30, "momentum": 0.25, "breakout": 0.15,
             "mean_reversion": 0.05, "funding_rate_arb": 0.10,
-            "ichimoku_cloud": 0.10,
+            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.05,
         },
         "TRENDING_DOWN": {
-            "trend_follower": 0.32, "momentum": 0.27, "breakout": 0.16,
+            "trend_follower": 0.30, "momentum": 0.25, "breakout": 0.15,
             "mean_reversion": 0.05, "funding_rate_arb": 0.10,
-            "ichimoku_cloud": 0.10,
+            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.05,
         },
         "RANGING": {
             "trend_follower": 0.05, "momentum": 0.05, "breakout": 0.05,
@@ -127,8 +127,7 @@ class StrategyEngine:
                 sig.confidence = min(0.95, sig.confidence + 0.10)  # Strong consensus
             elif agreement >= 2:
                 sig.confidence = min(0.95, sig.confidence + 0.05)  # Moderate consensus
-            elif agreement == 1:
-                sig.confidence = max(0.30, sig.confidence - 0.05)  # No consensus, penalize
+            # Solo signals (agreement == 1): no penalty — avoid killing borderline signals
 
         # Deduplicate: per symbol, keep highest weighted_score signal
         # weighted_score = confidence * strategy_weight ensures regime-appropriate

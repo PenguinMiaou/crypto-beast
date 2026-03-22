@@ -65,6 +65,10 @@ class TestPaperTrading:
         where the evolver has learned to trust the trend_follower strategy.
         """
         config = Config()
+        # Lower fee so the TP-distance check doesn't filter this integration test's synthetic
+        # signal (min_profit_pct = taker_fee * 2 * 3). The fee formula fix (Bug 3) is tested
+        # in unit tests; here we just need a valid end-to-end signal to reach execution.
+        config.taker_fee = 0.0001
         regime_detector = MarketRegimeDetector()
         session_trader = SessionTrader()
         multi_timeframe = MultiTimeframe()

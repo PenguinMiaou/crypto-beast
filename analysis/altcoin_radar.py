@@ -30,7 +30,7 @@ class AltcoinRadar:
         volume_24h: float,
         price_change_24h: float,
         btc_correlation: float = 0.5,
-        kline_count: int = 99999,
+        kline_count: int = 0,
     ) -> Optional[float]:
         """Score a coin. Returns None if filtered out.
 
@@ -39,15 +39,16 @@ class AltcoinRadar:
             volume_24h: 24h quote volume in USD
             price_change_24h: 24h price change percentage
             btc_correlation: correlation with BTC (0-1)
-            kline_count: number of available 5m klines (for maturity check)
+            kline_count: number of available 5m klines (for maturity check).
+                         0 (default) means not provided — maturity check is skipped.
         """
         # Filter: minimum volume
         if volume_24h < self.MIN_VOLUME_24H:
             self._filtered_out[symbol] = f"low_volume ({volume_24h/1e6:.0f}M < 100M)"
             return None
 
-        # Filter: new coin (not enough history)
-        if kline_count < self.MIN_KLINE_COUNT:
+        # Filter: new coin (not enough history) — only when kline_count was explicitly provided
+        if 0 < kline_count < self.MIN_KLINE_COUNT:
             self._filtered_out[symbol] = f"new_coin ({kline_count} bars < {self.MIN_KLINE_COUNT})"
             return None
 

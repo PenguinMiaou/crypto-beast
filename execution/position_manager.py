@@ -95,7 +95,7 @@ class PositionManager:
 
             # 0. Breakeven SL: move stop to entry + fees when profit > threshold
             if profit_pct >= self._breakeven_threshold and stop_loss:
-                fee_adj = entry_price * 0.0008 / leverage  # 2x taker fee / leverage
+                fee_adj = entry_price * 0.0008  # 2x taker fee (open + close), fee is per notional not margin
                 if side == "LONG":
                     breakeven_sl = entry_price + fee_adj
                     if stop_loss < breakeven_sl:
