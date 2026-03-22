@@ -221,15 +221,24 @@ class PositionManager:
             )
             result = await self._executor.close_position(position, OrderType.MARKET)
             if result.success:
-                # Update DB with actual fill price
-                actual_pnl = trade["pnl"]
+                # Recalculate PnL with actual fill price (not the estimated price)
+                fill = result.avg_fill_price
+                entry = trade["entry_price"]
+                qty = trade["quantity"]
+                lev = trade["leverage"]
+                if trade["side"] == "LONG":
+                    actual_pnl = (fill - entry) * qty * lev - result.fees_paid
+                else:
+                    actual_pnl = (entry - fill) * qty * lev - result.fees_paid
+                actual_pnl = round(actual_pnl, 4)
+
                 self.db.execute(
                     "UPDATE trades SET exit_price = ?, exit_time = ?, pnl = ?, fees = fees + ?, status = 'CLOSED' WHERE id = ?",
-                    (result.avg_fill_price, datetime.now(timezone.utc).isoformat(),
+                    (fill, datetime.now(timezone.utc).isoformat(),
                      actual_pnl, result.fees_paid, trade["trade_id"])
                 )
                 logger.info(
-                    f"LIVE CLOSED {trade['side']} {trade['symbol']} @ ${result.avg_fill_price:,.2f} | "
+                    f"LIVE CLOSED {trade['side']} {trade['symbol']} @ ${fill:,.2f} | "
                     f"PnL={actual_pnl:+.4f} | Reason={trade['reason']}"
                 )
                 return True
