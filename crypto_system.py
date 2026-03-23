@@ -785,6 +785,7 @@ class TradingBot:
             executor = m.get("executor")
             if executor:
                 try:
+                    from datetime import datetime as _dt, timezone as _tz
                     ex_positions, _, _, _ = await executor.get_positions_and_account()
                     db_open = self.db.execute(
                         "SELECT symbol, side FROM trades WHERE status='OPEN'"
@@ -799,7 +800,6 @@ class TradingBot:
                                 f"ORPHAN POSITION detected: {pos.symbol} {pos.direction.value} "
                                 f"qty={pos.quantity} on exchange but not in DB — re-inserting"
                             )
-                            from datetime import datetime, timezone
                             sl_default = round(pos.entry_price * (0.97 if pos.direction.value == "LONG" else 1.03), 2)
                             tp_default = round(pos.entry_price * (1.06 if pos.direction.value == "LONG" else 0.94), 2)
                             self.db.execute(
@@ -807,7 +807,7 @@ class TradingBot:
                                 "strategy, entry_time, fees, status, stop_loss, take_profit, peak_profit) "
                                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                 (pos.symbol, pos.direction.value, pos.entry_price, pos.quantity,
-                                 pos.leverage, "reconciled", datetime.now(timezone.utc).isoformat(),
+                                 pos.leverage, "reconciled", _dt.now(_tz.utc).isoformat(),
                                  0, "OPEN", sl_default, tp_default, 0)
                             )
                 except Exception as e:
