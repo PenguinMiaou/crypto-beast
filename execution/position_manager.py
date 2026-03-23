@@ -97,15 +97,13 @@ class PositionManager:
             if profit_pct >= self._breakeven_threshold and stop_loss:
                 fee_adj = entry_price * 0.0008  # 2x taker fee (open + close), fee is per notional not margin
                 if side == "LONG":
-                    breakeven_sl = entry_price + fee_adj
-                    if stop_loss < breakeven_sl:
-                        new_sl = round(breakeven_sl, 2)
+                    new_sl = round(entry_price + fee_adj, 2)
+                    if round(stop_loss, 2) < new_sl:
                         self._schedule_sl_update(trade_id, symbol, side, quantity, new_sl)
                         stop_loss = new_sl  # Use updated SL for rest of checks
                 else:  # SHORT
-                    breakeven_sl = entry_price - fee_adj
-                    if stop_loss > breakeven_sl:
-                        new_sl = round(breakeven_sl, 2)
+                    new_sl = round(entry_price - fee_adj, 2)
+                    if round(stop_loss, 2) > new_sl:
                         self._schedule_sl_update(trade_id, symbol, side, quantity, new_sl)
                         stop_loss = new_sl
 

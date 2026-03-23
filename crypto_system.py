@@ -208,7 +208,6 @@ class TradingBot:
                 "mean_reversion": 0.8,
                 "momentum": 0.9,
                 "breakout": 0.7,
-                "scalper": 0.6,
             })
             funding_rate_arb = FundingRateArb()
 

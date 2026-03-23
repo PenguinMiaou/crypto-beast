@@ -19,7 +19,7 @@ class PerformanceAnalyzer:
         if not trades:
             return self._empty_result()
 
-        pnls = [t.get("pnl", 0) for t in trades]
+        pnls = [(t.get("pnl") or 0) for t in trades]
         wins = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p <= 0]
 
@@ -113,7 +113,7 @@ class PerformanceAnalyzer:
 
         result: Dict[str, dict] = {}
         for k, group_trades in groups.items():
-            pnls = [t.get("pnl", 0) for t in group_trades]
+            pnls = [(t.get("pnl") or 0) for t in group_trades]
             wins = [p for p in pnls if p > 0]
             result[k] = {
                 "trades": len(group_trades),

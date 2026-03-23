@@ -92,7 +92,6 @@ class Evolver:
         from strategy.mean_reversion import MeanReversion
         from strategy.momentum import Momentum
         from strategy.breakout import Breakout
-        from strategy.scalper import Scalper
         from evolution.backtest_lab import BacktestLab
 
         if not data:
