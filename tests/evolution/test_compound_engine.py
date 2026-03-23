@@ -1,6 +1,7 @@
 """Tests for compound growth engine."""
 
 import pytest
+from datetime import datetime, timezone
 
 from config import Config
 from core.models import Portfolio, PositionSizing
@@ -26,12 +27,12 @@ def db_with_trades(db):
     for i in range(12):
         db.execute(
             "INSERT INTO trades (symbol, side, strategy, entry_price, exit_price, quantity, leverage, pnl, fees, status, entry_time, exit_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            ("BTCUSDT", "LONG", "trend_follower", 65000, 65150, 0.01, 1, 1.5, 0.05, "CLOSED", "2026-01-01", "2026-01-01")
+            ("BTCUSDT", "LONG", "trend_follower", 65000, 65150, 0.01, 1, 1.5, 0.05, "CLOSED", datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat())
         )
     for i in range(8):
         db.execute(
             "INSERT INTO trades (symbol, side, strategy, entry_price, exit_price, quantity, leverage, pnl, fees, status, entry_time, exit_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            ("BTCUSDT", "LONG", "trend_follower", 65000, 64900, 0.01, 1, -1.0, 0.05, "CLOSED", "2026-01-01", "2026-01-01")
+            ("BTCUSDT", "LONG", "trend_follower", 65000, 64900, 0.01, 1, -1.0, 0.05, "CLOSED", datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat())
         )
     return db
 
@@ -54,7 +55,7 @@ class TestKellyFraction:
         for i in range(3):
             engine.db.execute(
                 "INSERT INTO trades (symbol, side, strategy, entry_price, exit_price, quantity, leverage, pnl, fees, status, entry_time, exit_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                ("BTCUSDT", "LONG", "trend_follower", 65000, 65100, 0.01, 1, 1.0, 0.05, "CLOSED", "2026-01-01", "2026-01-01")
+                ("BTCUSDT", "LONG", "trend_follower", 65000, 65100, 0.01, 1, 1.0, 0.05, "CLOSED", datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat())
             )
         assert engine.get_kelly_fraction("trend_follower") == 0.02
 
@@ -63,7 +64,7 @@ class TestKellyFraction:
         for i in range(15):
             engine.db.execute(
                 "INSERT INTO trades (symbol, side, strategy, entry_price, exit_price, quantity, leverage, pnl, fees, status, entry_time, exit_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                ("BTCUSDT", "LONG", "momentum", 65000, 65200, 0.01, 1, 2.0, 0.05, "CLOSED", "2026-01-01", "2026-01-01")
+                ("BTCUSDT", "LONG", "momentum", 65000, 65200, 0.01, 1, 2.0, 0.05, "CLOSED", datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat())
             )
         assert engine.get_kelly_fraction("momentum") == 0.1
 

@@ -172,11 +172,13 @@ class RiskManager:
                 logger.debug(f"Signal rejected: adaptive min_confidence {min_confidence + conf_boost:.2f}")
                 return None
 
-        # Kelly criterion: reject strategies with negative expected value (paper-track only)
+        # Kelly criterion: reject strategies with negative expected value
+        # Passes current regime for rehabilitation (regime-fit can unblock)
         if self._compound:
-            strategy_kelly = self._compound.get_kelly_fraction(signal.strategy)
+            current_regime = signal.regime.value if hasattr(signal.regime, 'value') else str(signal.regime)
+            strategy_kelly = self._compound.get_kelly_fraction(signal.strategy, current_regime)
             if strategy_kelly <= 0.0:
-                logger.debug(f"Signal rejected: Kelly negative ({strategy_kelly:.4f}) for {signal.strategy} (paper-track only)")
+                logger.debug(f"Signal rejected: Kelly negative ({strategy_kelly:.4f}) for {signal.strategy}")
                 return None
 
         # Check max concurrent positions
