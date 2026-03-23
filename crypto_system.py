@@ -886,6 +886,7 @@ class TradingBot:
                         recovery_params[key] = max(current, val)
 
             # Generate signals
+            from core.models import Direction, SignalType
             signals = m["strategy_engine"].generate_signals(symbol, klines_5m)
 
             # Pattern scanning
