@@ -73,6 +73,9 @@
 
 ## Reconciliation
 - On startup: `reconcile_with_exchange()` syncs DB with Binance
+- **Periodic reconciliation every 12 cycles (~1min)**: compares exchange positions vs DB, re-inserts orphan positions
+- Orphan position = exists on exchange but DB says CLOSED → SL/monitoring silently stops → unprotected loss (cost $11 on 2026-03-23)
+- Periodic SL check also every 12 cycles (~1min, was 60 cycles/5min)
 - Preserves SL/TP/strategy if position already in DB — only updates qty/entry
 - NEVER delete crypto_beast.db on restart — reconciliation handles sync
 - datetime: always `datetime.now(timezone.utc)` (aware), never `datetime.utcnow()` (naive)
@@ -193,7 +196,7 @@
 - MINOR: new features, significant improvements (e.g., DefenseManager, signal pipeline)
 - PATCH: bug fixes, small tweaks (e.g., fix -2022 handling, fix timeout)
 - Tag + GitHub release for every MINOR/MAJOR bump; PATCH optional
-- Current: v1.7.3 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
+- Current: v1.7.4 — repo at `https://github.com/PenguinMiaou/crypto-beast` (private)
 
 ## Architecture
 - 7-layer async trading system for Binance USDT-M Futures
