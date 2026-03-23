@@ -87,7 +87,7 @@ class AdaptiveRiskState:
 
         try:
             cursor = self._db.execute(
-                "SELECT pnl FROM trades WHERE status='CLOSED' AND pnl IS NOT NULL"
+                "SELECT pnl FROM trades WHERE status='CLOSED' AND pnl IS NOT NULL AND pnl != 0"
                 " ORDER BY exit_time DESC LIMIT ?",
                 (self._lookback,),
             )
