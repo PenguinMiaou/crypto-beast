@@ -778,9 +778,43 @@ class TradingBot:
             },
         }
 
-        # 6.5. Periodic SL check — ensure all positions have exchange-level SL protection
-        # Needed because LIMIT orders may fill after _place_exit_orders was called with qty=0
-        if self._cycle_count % 60 == 0 and not self.paper_mode and positions:
+        # 6.5. Periodic reconciliation — sync DB with exchange every 12 cycles (~1 min)
+        # CRITICAL: prevents orphan positions (DB says CLOSED but exchange still open)
+        # which caused $11 loss on 2026-03-23 when SL/monitoring silently stopped
+        if self._cycle_count % 12 == 0 and not self.paper_mode:
+            executor = m.get("executor")
+            if executor:
+                try:
+                    ex_positions, _, _, _ = await executor.get_positions_and_account()
+                    db_open = self.db.execute(
+                        "SELECT symbol, side FROM trades WHERE status='OPEN'"
+                    ).fetchall()
+                    db_keys = set((r[0], r[1]) for r in db_open)
+
+                    for pos in ex_positions:
+                        key = (pos.symbol, pos.direction.value)
+                        if key not in db_keys:
+                            # Orphan position: exists on exchange but not in DB!
+                            logger.warning(
+                                f"ORPHAN POSITION detected: {pos.symbol} {pos.direction.value} "
+                                f"qty={pos.quantity} on exchange but not in DB — re-inserting"
+                            )
+                            from datetime import datetime, timezone
+                            sl_default = round(pos.entry_price * (0.97 if pos.direction.value == "LONG" else 1.03), 2)
+                            tp_default = round(pos.entry_price * (1.06 if pos.direction.value == "LONG" else 0.94), 2)
+                            self.db.execute(
+                                "INSERT INTO trades (symbol, side, entry_price, quantity, leverage, "
+                                "strategy, entry_time, fees, status, stop_loss, take_profit, peak_profit) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                (pos.symbol, pos.direction.value, pos.entry_price, pos.quantity,
+                                 pos.leverage, "reconciled", datetime.now(timezone.utc).isoformat(),
+                                 0, "OPEN", sl_default, tp_default, 0)
+                            )
+                except Exception as e:
+                    logger.debug(f"Periodic reconciliation failed: {e}")
+
+        # 6.6. Periodic SL check — ensure all positions have exchange-level SL protection
+        if self._cycle_count % 12 == 0 and not self.paper_mode and positions:
             executor = m.get("executor")
             if executor and hasattr(executor, "ensure_sl_orders"):
                 try:
