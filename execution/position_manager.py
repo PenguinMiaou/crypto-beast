@@ -139,8 +139,9 @@ class PositionManager:
                     reason = "PROFIT_PROTECT"
                     exit_price = current_price
 
-            # 3. Fast stop: if position opened < 30min ago and leveraged loss > 1%
-            if reason is None and entry_time and profit_pct < -0.01:
+            # 3. Fast stop: if position opened < 30min ago and leveraged loss > 5%
+            # Was 1% but too sensitive — 5x leverage + 0.2% noise = instant trigger
+            if reason is None and entry_time and profit_pct < -0.05:
                 try:
                     entry_dt = datetime.fromisoformat(entry_time) if isinstance(entry_time, str) else entry_time
                     if entry_dt.tzinfo is None:
