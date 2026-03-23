@@ -895,13 +895,25 @@ class TradingBot:
                 # Convert pattern to TradeSignal if confidence is high enough
                 if pattern.confidence >= 0.5:
                     regime = m["regime_detector"].detect(klines_5m)
+                    entry = float(klines_5m.iloc[-1]["close"])
+                    sl = pattern.stop_price
+                    tp = pattern.target_price
+                    # Cap SL distance: ensure R:R >= 1:1.5 (SL no wider than TP distance / 1.5)
+                    tp_dist = abs(tp - entry)
+                    sl_dist = abs(sl - entry)
+                    if tp_dist > 0 and sl_dist > tp_dist / 1.5:
+                        max_sl_dist = tp_dist / 1.5
+                        if pattern.direction == Direction.LONG:
+                            sl = round(entry - max_sl_dist, 2)
+                        else:
+                            sl = round(entry + max_sl_dist, 2)
                     pattern_signal = TradeSignal(
                         symbol=symbol,
                         direction=pattern.direction,
                         confidence=pattern.confidence,
-                        entry_price=float(klines_5m.iloc[-1]["close"]),
-                        stop_loss=pattern.stop_price,
-                        take_profit=pattern.target_price,
+                        entry_price=entry,
+                        stop_loss=sl,
+                        take_profit=tp,
                         strategy=f"pattern_{pattern.name}",
                         regime=regime,
                         timeframe_score=0,
