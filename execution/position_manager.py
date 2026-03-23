@@ -257,12 +257,31 @@ class PositionManager:
                 )
                 return True
             elif result.error == "already_closed":
-                # Position was already closed by exchange SL — mark CLOSED in DB with estimated PnL
+                # Verify position is actually gone on exchange before marking CLOSED
+                try:
+                    ex_positions, _, _, _ = await self._executor.get_positions_and_account()
+                    still_open = any(
+                        p.symbol == trade["symbol"] and p.direction.value == trade["side"]
+                        for p in ex_positions
+                    )
+                    if still_open:
+                        logger.warning(
+                            f"Position {trade['symbol']} {trade['side']} reported already_closed "
+                            f"but still on exchange! NOT marking CLOSED."
+                        )
+                        return False
+                except Exception:
+                    # If we can't verify, don't mark CLOSED (conservative)
+                    logger.warning(
+                        f"Cannot verify {trade['symbol']} status on exchange, NOT marking CLOSED"
+                    )
+                    return False
+                # Position confirmed gone on exchange
                 self.db.execute(
                     "UPDATE trades SET exit_time = ?, exit_price = ?, pnl = ?, status = 'CLOSED' WHERE id = ?",
                     (datetime.now(timezone.utc).isoformat(), trade["exit_price"], trade["pnl"], trade["trade_id"])
                 )
-                logger.info(f"Marked {trade['symbol']} as CLOSED in DB (exchange SL) PnL={trade['pnl']:+.4f}")
+                logger.info(f"Marked {trade['symbol']} as CLOSED (verified gone from exchange)")
                 return True
             else:
                 logger.error(f"Live close failed: {result.error}")
@@ -300,4 +319,7 @@ class PositionManager:
                         f"SL moved to breakeven: {update['symbol']} {pos_side} SL={update['new_sl']}"
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to update exchange SL: {e}")
+                    logger.warning(
+                        f"Failed to update SL for {update['symbol']} {pos_side}: {e} "
+                        f"— ensure_sl_orders will re-place SL within 1min"
+                    )

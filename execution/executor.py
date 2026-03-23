@@ -177,7 +177,7 @@ class LiveExecutor:
                         await asyncio.sleep(1)
                         try:
                             order_status = await self.exchange.fapiPrivateGetOrder({
-                                "symbol": binance_sym,
+                                "symbol": self._to_binance_symbol(signal.symbol),
                                 "orderId": order_id,
                             })
                             filled = float(order_status.get("executedQty", 0))
@@ -277,7 +277,20 @@ class LiveExecutor:
                 exit_ids.append(str(algo_id))
                 logger.info(f"SL placed: {close_side} {signal.symbol} {qty} @ stop={signal.stop_loss} | algoId={algo_id}")
             except Exception as e:
-                logger.warning(f"SL order failed: {e}")
+                logger.warning(f"SL order failed (attempt 1): {e}")
+                # Immediate retry — SL is critical for capital protection
+                try:
+                    await asyncio.sleep(1)
+                    result = await self._place_algo_order(
+                        binance_sym, close_side, position_side,
+                        "STOP_MARKET", qty, signal.stop_loss)
+                    algo_id = result.get("algoId", "")
+                    exit_ids.append(str(algo_id))
+                    logger.info(f"SL placed on retry: {close_side} {signal.symbol} @ stop={signal.stop_loss} | algoId={algo_id}")
+                except Exception as e2:
+                    logger.error(
+                        f"SL CRITICAL FAILURE after retry: {e2} — position {signal.symbol} has NO SL!"
+                    )
 
         # TP: NOT placed on exchange — managed by bot's profit protection mechanism.
         # Reason: exchange TP triggers instant close, then bot re-opens same direction = double fees.
@@ -463,14 +476,26 @@ class LiveExecutor:
             fill_price = float(result.get("avgPrice", 0))
             filled_qty = float(result.get("executedQty", 0))
 
-            # If fill_price=0 or filled_qty=0, position was likely already closed on exchange
+            # If fill_price=0 or filled_qty=0, query actual order status before assuming already_closed
             if fill_price <= 0 or filled_qty <= 0:
-                logger.info(f"Position {position.symbol} close returned fill=0 (likely already closed by exchange SL)")
-                return ExecutionResult(
-                    success=False, order_ids=[], avg_fill_price=0,
-                    total_filled=0, fees_paid=0, slippage=0,
-                    error="already_closed",
-                )
+                await asyncio.sleep(1)
+                try:
+                    order_status = await self.exchange.fapiPrivateGetOrder({
+                        "symbol": self._to_binance_symbol(position.symbol),
+                        "orderId": result.get("orderId", ""),
+                    })
+                    filled_qty = float(order_status.get("executedQty", 0))
+                    fill_price = float(order_status.get("avgPrice", 0))
+                except Exception:
+                    pass
+
+                if fill_price <= 0 or filled_qty <= 0:
+                    logger.info(f"Position {position.symbol} close returned fill=0 (likely already closed by exchange SL)")
+                    return ExecutionResult(
+                        success=False, order_ids=[], avg_fill_price=0,
+                        total_filled=0, fees_paid=0, slippage=0,
+                        error="already_closed",
+                    )
 
             fees = filled_qty * fill_price * self.TAKER_FEE
 

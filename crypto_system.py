@@ -810,6 +810,19 @@ class TradingBot:
                                  pos.leverage, "reconciled", _dt.now(_tz.utc).isoformat(),
                                  0, "OPEN", sl_default, tp_default, 0)
                             )
+
+                    # Also check: DB says OPEN but exchange says closed (ghost positions)
+                    ex_keys = set((pos.symbol, pos.direction.value) for pos in ex_positions)
+                    for db_sym, db_side in db_open:
+                        if (db_sym, db_side) not in ex_keys:
+                            logger.warning(
+                                f"GHOST POSITION detected: {db_sym} {db_side} in DB but not on exchange — marking CLOSED"
+                            )
+                            self.db.execute(
+                                "UPDATE trades SET status='CLOSED', exit_time=?, pnl=0 "
+                                "WHERE symbol=? AND side=? AND status='OPEN'",
+                                (_dt.now(_tz.utc).isoformat(), db_sym, db_side)
+                            )
                 except Exception as e:
                     logger.debug(f"Periodic reconciliation failed: {e}")
 
@@ -1144,13 +1157,27 @@ class TradingBot:
                                 f"{pos.symbol} closed {pos.direction.value} PnL={pnl:+.4f} | opening {signal.direction.value}",
                             )
                         elif close_result.error == "already_closed":
-                            # Position already closed by exchange SL — mark DB with estimated PnL
+                            # Verify position actually gone before marking CLOSED
+                            try:
+                                ex_positions, _, _, _ = await m["executor"].get_positions_and_account()
+                                still_open = any(
+                                    p.symbol == pos.symbol and p.direction == pos.direction
+                                    for p in ex_positions
+                                )
+                                if still_open:
+                                    logger.warning(f"Flip close reported already_closed but position still on exchange!")
+                                    flip_failed = True
+                                    break
+                            except Exception:
+                                flip_failed = True
+                                break
+                            # Confirmed gone — update DB
                             self.db.execute(
                                 "UPDATE trades SET status='CLOSED', exit_time=?, exit_price=entry_price, pnl=0 "
                                 "WHERE symbol=? AND side=? AND status='OPEN'",
                                 (datetime.now(timezone.utc).isoformat(), pos.symbol, pos.direction.value),
                             )
-                            logger.info(f"Flip: {pos.symbol} {pos.direction.value} already closed on exchange, marked DB")
+                            logger.info(f"Flip: {pos.symbol} {pos.direction.value} already closed on exchange (verified), marked DB")
                         else:
                             # Close failed — don't open new position
                             logger.warning(f"Flip close failed for {pos.symbol}: {close_result.error}, aborting flip")
@@ -1225,8 +1252,24 @@ class TradingBot:
         positions = await self.modules["executor"].get_positions()
         for pos in positions:
             if pos.symbol == symbol:
-                await self.modules["executor"].close_position(pos, OrderType.MARKET)
-                logger.info(f"Closed {symbol} via watchdog command")
+                result = await self.modules["executor"].close_position(pos, OrderType.MARKET)
+                side = pos.direction.value
+                if result.success:
+                    self.db.execute(
+                        "UPDATE trades SET exit_price=?, exit_time=?, pnl=0, status='CLOSED' "
+                        "WHERE symbol=? AND side=? AND status='OPEN'",
+                        (result.avg_fill_price, datetime.now(timezone.utc).isoformat(), symbol, side),
+                    )
+                    logger.info(f"Closed {symbol} {side} via watchdog command, DB updated")
+                elif result.error == "already_closed":
+                    self.db.execute(
+                        "UPDATE trades SET exit_time=?, pnl=0, status='CLOSED' "
+                        "WHERE symbol=? AND status='OPEN'",
+                        (datetime.now(timezone.utc).isoformat(), symbol),
+                    )
+                    logger.info(f"Closed {symbol} via watchdog (already closed on exchange)")
+                else:
+                    logger.error(f"Failed to close {symbol} via watchdog: {result.error}")
                 return
         logger.warning(f"No open position for {symbol} to close")
 
@@ -1242,13 +1285,13 @@ class TradingBot:
                 pnl = pos.unrealized_pnl - result.fees_paid
                 self.db.execute(
                     "UPDATE trades SET status='CLOSED', exit_price=?, exit_time=?, pnl=?, fees=fees+? "
-                    "WHERE symbol=? AND status='OPEN'",
+                    "WHERE symbol=? AND side=? AND status='OPEN'",
                     (result.avg_fill_price, datetime.now(timezone.utc).isoformat(),
-                     round(pnl, 4), round(result.fees_paid, 6), pos.symbol),
+                     round(pnl, 4), round(result.fees_paid, 6), pos.symbol, pos.direction.value),
                 )
                 self._daily_pnl += pnl
                 self._daily_fees += result.fees_paid
-                logger.info(f"Emergency closed {pos.symbol}: PnL={pnl:+.4f} (fees={result.fees_paid:.4f})")
+                logger.info(f"Emergency closed {pos.symbol} {pos.direction.value}: PnL={pnl:+.4f} (fees={result.fees_paid:.4f})")
 
     async def run_scheduler(self, shutdown: GracefulShutdown) -> None:
         """Background scheduler for periodic tasks."""

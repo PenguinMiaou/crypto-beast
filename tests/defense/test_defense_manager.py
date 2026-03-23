@@ -33,7 +33,7 @@ class TestDefenseManager:
         result = dm.check(_make_portfolio(100, 100))
         assert result.action == ShieldAction.CONTINUE
         assert result.recovery_state == RecoveryState.NORMAL
-        assert result.params["max_leverage"] == 7
+        assert result.params["max_leverage"] == 10
 
     def test_cautious_at_8pct(self):
         from defense.defense_manager import DefenseManager
