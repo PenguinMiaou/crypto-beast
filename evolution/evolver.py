@@ -19,11 +19,13 @@ class Evolver:
         self._pending_config = None
         self.db = db
         self._strategy_weights: Dict[str, float] = {
-            "trend_follower": 0.2,
-            "mean_reversion": 0.2,
-            "momentum": 0.2,
-            "breakout": 0.2,
-            "scalper": 0.2,
+            "trend_follower": 0.15,
+            "mean_reversion": 0.15,
+            "momentum": 0.15,
+            "breakout": 0.15,
+            "ichimoku_cloud": 0.15,
+            "enhanced_bb_rsi": 0.15,
+            "funding_rate_arb": 0.10,
         }
 
     def build_search_space(
@@ -113,19 +115,33 @@ class Evolver:
             return None
 
         # === Phase 1: Strategy weight rebalancing (always runs) ===
+        # Import all active strategies (must match strategy_engine._strategies)
+        from strategy.ichimoku_cloud import IchimokuCloud
+        from strategy.enhanced_bb_rsi import EnhancedBbRsi
+        from strategy.funding_rate_arb import FundingRateArb
+
         strategies = {
             "trend_follower": TrendFollower(),
             "mean_reversion": MeanReversion(),
             "momentum": Momentum(),
             "breakout": Breakout(),
-            "scalper": Scalper(),
+            "ichimoku_cloud": IchimokuCloud(),
+            "enhanced_bb_rsi": EnhancedBbRsi(),
+            "funding_rate_arb": FundingRateArb(),
         }
 
         performances: Dict[str, float] = {}
         for name, strategy in strategies.items():
             try:
-                result = backtest_lab.run_backtest(strategy, sample_data, sample_symbol)
-                performances[name] = result.sharpe_ratio
+                # Average Sharpe across all available symbols
+                sharpe_sum = 0.0
+                sym_count = 0
+                for sym, df in data.items():
+                    if len(df) >= 200:
+                        result = backtest_lab.run_backtest(strategy, df, sym)
+                        sharpe_sum += result.sharpe_ratio
+                        sym_count += 1
+                performances[name] = sharpe_sum / sym_count if sym_count > 0 else 0.0
             except Exception as e:
                 logger.warning(f"Backtest failed for {name}: {e}")
                 performances[name] = 0.0
@@ -143,8 +159,10 @@ class Evolver:
             pass
 
         best = {}
-        sharpe_before = performances.get("trend_follower", 0)
-        sharpe_after = sharpe_before  # Default: no change
+        # Average Sharpe across all strategies as summary metric
+        sharpe_values = [v for v in performances.values() if v != 0]
+        sharpe_before = sum(sharpe_values) / len(sharpe_values) if sharpe_values else 0
+        sharpe_after = sharpe_before  # Default: no change until Optuna runs
 
         if trade_count < self.MIN_TRADES_FOR_OPTUNA:
             logger.info(f"Optuna skipped: {trade_count}/{self.MIN_TRADES_FOR_OPTUNA} trades (weights-only mode)")
