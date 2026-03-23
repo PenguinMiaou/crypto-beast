@@ -178,6 +178,14 @@
 - 动态 altcoin 从 exchange.market() 获取 qty 精度（硬编码表只覆盖 10 个 symbol）
 - Ensemble 投票只 boost 共识，不惩罚单策略信号（好信号不该被错杀）
 - AltcoinRadar: 每 4h 扫描，$100M 最低交易量，kline_count=0 时跳过 maturity 检查
+- Kelly 3 层恢复: A)只看 7 天数据(旧失败过期) B)regime 适配时允许 0.01 C)<5 笔近期交易→默认 0.02
+- HarmonicDivergence: 11 指标背离检测(RSI/MACD/OBV/CCI/MFI/ADX/Stoch/ROC/UO/AO/CMF)，pivot-based，与其他策略零重叠
+- 背离信号有 30 bar 偏移(divergence 在 pivot 形成，确认在后续 bar)
+- 新增策略 checklist: strategy_engine.py(注册+REGIME_WEIGHTS 全 6 regime)、evolver.py(策略列表+默认权重)、compound_engine.py(Kelly)、tests
+- crypto_system.py 的 `from core.models import Direction` 必须在使用前（局部 import 顺序敏感）
+- Flip 失败后必须用 flag 跳出外层 signal 循环（`continue` 只跳内层 pos 循环）
+- REGIME_WEIGHTS 必须包含所有活跃策略的条目（缺失→fallback 0.1 打破权重总和）
+- 新增策略后 Evolver 策略列表必须同步更新（否则 Evolution 不评估新策略）
 
 ## Versioning
 - Semantic versioning: vMAJOR.MINOR.PATCH (e.g., v1.1.0)
