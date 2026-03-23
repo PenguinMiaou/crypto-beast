@@ -1103,9 +1103,9 @@ class TradingBot:
                     first_tranche = plan.entry_tranches[0]
                     from core.models import Direction as _Direction
                     if signal.direction == _Direction.LONG:
-                        limit_price = round(signal.entry_price * 0.9998, 2)  # 0.02% below
+                        limit_price = round(signal.entry_price * 0.9998, 2)
                     else:
-                        limit_price = round(signal.entry_price * 1.0002, 2)  # 0.02% above
+                        limit_price = round(signal.entry_price * 1.0002, 2)
                     first_tranche["type"] = "LIMIT"
                     first_tranche["price"] = limit_price
                     first_tranche["timeInForce"] = "IOC"
