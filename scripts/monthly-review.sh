@@ -5,7 +5,7 @@ set +e
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DIR"
 
-TIMEOUT=600
+TIMEOUT=900  # 15 minutes
 LOG="$DIR/logs/claude_calls.log"
 MONTH=$(date -u +%Y-%m)
 REVIEW_DIR="$DIR/logs/reviews"

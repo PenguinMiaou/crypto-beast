@@ -259,7 +259,7 @@ class WatchdogDaemon:
                 ["bash", script],
                 cwd=self._base_dir,
                 capture_output=True, text=True,
-                timeout=600,  # 10 minutes (claude needs time for analysis + fix + pytest)
+                timeout=900,  # 15 minutes (claude needs time for analysis + fix + pytest)
             )
             success = result.returncode == 0
             self._state.update(claude_calls_today=state["claude_calls_today"] + 1)
@@ -325,7 +325,7 @@ class WatchdogDaemon:
                 ["bash", script],
                 cwd=self._base_dir,
                 capture_output=True, text=True,
-                timeout=600,  # 10 minutes
+                timeout=900,  # 15 minutes
             )
             # Send Telegram summary FIRST (with retries for network timeout)
             summary_file = os.path.join(self._base_dir, "review_data", "telegram_summary.txt")

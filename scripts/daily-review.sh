@@ -5,7 +5,7 @@ set +e  # Don't exit on error — we need to log EXIT_CODE
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DIR"
 
-TIMEOUT=600  # 10 minutes
+TIMEOUT=900  # 15 minutes
 LOG="$DIR/logs/claude_calls.log"
 DATE=$(date -u +%Y-%m-%d)
 REVIEW_DIR="$DIR/logs/reviews"
