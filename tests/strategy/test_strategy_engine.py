@@ -103,11 +103,12 @@ class TestStrategyEngine:
         assert signals == []
 
     def test_get_strategy_weights(self, engine):
-        """get_strategy_weights returns current weights for all 7 strategies."""
+        """get_strategy_weights returns current weights for all 8 strategies."""
         weights = engine.get_strategy_weights()
-        assert len(weights) == 7
+        assert len(weights) == 8
+        expected = 1.0 / 8
         for w in weights.values():
-            assert abs(w - 1.0 / 7) < 1e-9
+            assert abs(w - expected) < 1e-9
 
     def test_update_weights(self, engine):
         """update_weights persists changes."""
@@ -115,8 +116,8 @@ class TestStrategyEngine:
         weights = engine.get_strategy_weights()
         assert weights["trend_follower"] == 0.5
         assert weights["scalper"] == 0.1
-        # Others unchanged from initial 1/7
-        assert abs(weights["mean_reversion"] - 1.0 / 7) < 1e-9
+        # Others unchanged from initial 1/8
+        assert abs(weights["mean_reversion"] - 1.0 / 8) < 1e-9
 
     def test_confluence_score_applied(self, engine, uptrend_data):
         """When MultiTimeframe has a cached score, it's applied to signals."""

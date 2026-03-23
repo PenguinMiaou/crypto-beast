@@ -19,13 +19,14 @@ class Evolver:
         self._pending_config = None
         self.db = db
         self._strategy_weights: Dict[str, float] = {
-            "trend_follower": 0.15,
-            "mean_reversion": 0.15,
-            "momentum": 0.15,
-            "breakout": 0.15,
-            "ichimoku_cloud": 0.15,
-            "enhanced_bb_rsi": 0.15,
+            "trend_follower": 0.13,
+            "mean_reversion": 0.13,
+            "momentum": 0.13,
+            "breakout": 0.13,
+            "ichimoku_cloud": 0.13,
+            "enhanced_bb_rsi": 0.13,
             "funding_rate_arb": 0.10,
+            "harmonic_divergence": 0.12,
         }
 
     def build_search_space(

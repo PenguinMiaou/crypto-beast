@@ -17,6 +17,7 @@ from strategy.breakout import Breakout
 from strategy.funding_rate_arb import FundingRateArb
 from strategy.ichimoku_cloud import IchimokuCloud
 from strategy.enhanced_bb_rsi import EnhancedBbRsi
+from strategy.harmonic_divergence import HarmonicDivergence
 
 
 class StrategyEngine:
@@ -24,35 +25,42 @@ class StrategyEngine:
 
     REGIME_WEIGHTS: Dict[str, Dict[str, float]] = {
         # scalper disabled (20% win rate, net loss) — weights redistributed to remaining strategies
+        # harmonic_divergence added — shaved 0.05 from top strategies per regime
         "TRENDING_UP": {
-            "trend_follower": 0.30, "momentum": 0.25, "breakout": 0.15,
+            "trend_follower": 0.27, "momentum": 0.22, "breakout": 0.13,
             "mean_reversion": 0.05, "funding_rate_arb": 0.10,
             "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.05,
+            "harmonic_divergence": 0.05,  # divergence at trend end, not during trend
         },
         "TRENDING_DOWN": {
-            "trend_follower": 0.30, "momentum": 0.25, "breakout": 0.15,
+            "trend_follower": 0.25, "momentum": 0.20, "breakout": 0.13,
             "mean_reversion": 0.05, "funding_rate_arb": 0.10,
-            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.05,
+            "ichimoku_cloud": 0.07, "enhanced_bb_rsi": 0.05,
+            "harmonic_divergence": 0.10,  # bullish divergence in downtrend = reversal signal
         },
         "RANGING": {
             "trend_follower": 0.05, "momentum": 0.05, "breakout": 0.05,
-            "mean_reversion": 0.30, "funding_rate_arb": 0.10,
-            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.35,
+            "mean_reversion": 0.25, "funding_rate_arb": 0.10,
+            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.30,
+            "harmonic_divergence": 0.10,  # divergence works well in ranging
         },
         "HIGH_VOLATILITY": {
-            "trend_follower": 0.15, "momentum": 0.10, "breakout": 0.25,
+            "trend_follower": 0.13, "momentum": 0.10, "breakout": 0.22,
             "mean_reversion": 0.10, "funding_rate_arb": 0.15,
             "ichimoku_cloud": 0.15, "enhanced_bb_rsi": 0.10,
+            "harmonic_divergence": 0.05,  # keltner filter guards against extreme vol
         },
         "LOW_VOLATILITY": {
-            "trend_follower": 0.10, "momentum": 0.10, "breakout": 0.05,
-            "mean_reversion": 0.30, "funding_rate_arb": 0.10,
-            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.25,
+            "trend_follower": 0.08, "momentum": 0.08, "breakout": 0.05,
+            "mean_reversion": 0.25, "funding_rate_arb": 0.10,
+            "ichimoku_cloud": 0.10, "enhanced_bb_rsi": 0.24,
+            "harmonic_divergence": 0.10,  # low vol → divergences are cleaner signals
         },
         "TRANSITIONING": {
-            "trend_follower": 0.10, "momentum": 0.10, "breakout": 0.12,
-            "mean_reversion": 0.23, "funding_rate_arb": 0.10,
-            "ichimoku_cloud": 0.15, "enhanced_bb_rsi": 0.20,
+            "trend_follower": 0.08, "momentum": 0.08, "breakout": 0.10,
+            "mean_reversion": 0.20, "funding_rate_arb": 0.10,
+            "ichimoku_cloud": 0.12, "enhanced_bb_rsi": 0.17,
+            "harmonic_divergence": 0.15,  # divergence most valuable during transitions
         },
     }
 
@@ -75,6 +83,7 @@ class StrategyEngine:
             "funding_rate_arb": FundingRateArb(),
             "ichimoku_cloud": IchimokuCloud(),
             "enhanced_bb_rsi": EnhancedBbRsi(),
+            "harmonic_divergence": HarmonicDivergence(),
         }
         # Default equal weights (1/7); overridden by regime logic or Evolver
         self._weights: Dict[str, float] = {name: 1.0 / len(self._strategies) for name in self._strategies}
